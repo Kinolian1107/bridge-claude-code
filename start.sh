@@ -16,7 +16,7 @@ fi
 
 export CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
 export CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-bypassPermissions}"
-export BRIDGE_PORT="${BRIDGE_PORT:-18792}"
+export BRIDGE_PORT="${BRIDGE_PORT:-18793}"
 
 # Check if already running
 if [ -f "$PIDFILE" ]; then

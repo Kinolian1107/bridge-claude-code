@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 
 // ─── Configuration ───────────────────────────────────────────────
 const CONFIG = {
-    port: parseInt(process.env.BRIDGE_PORT || "18792"),
+    port: parseInt(process.env.BRIDGE_PORT || "18793"),
     host: process.env.BRIDGE_HOST || "127.0.0.1",
     claudeModel: process.env.CLAUDE_MODEL || "sonnet",
     claudeBin: process.env.CLAUDE_BIN || "claude",
