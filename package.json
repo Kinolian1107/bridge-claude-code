@@ -1,0 +1,26 @@
+{
+    "name": "openclaw-bridge-claude-code",
+    "version": "1.0.0",
+    "description": "OpenAI-compatible API proxy that bridges OpenClaw to Claude Code CLI",
+    "type": "module",
+    "main": "claude-code-bridge.mjs",
+    "scripts": {
+        "start": "node claude-code-bridge.mjs",
+        "dev": "node --watch claude-code-bridge.mjs"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "keywords": [
+        "claude-code",
+        "openclaw",
+        "openai-compatible",
+        "api-proxy",
+        "bridge"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Kinolian1107/openclaw-bridge-claude-code.git"
+    },
+    "license": "MIT"
+}
