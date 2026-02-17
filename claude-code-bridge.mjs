@@ -182,8 +182,10 @@ function runClaudeCode(prompt, requestModel, stream, res) {
     args.push("--model", claudeModel);
 
     // Output format
+    // Claude Code requires --verbose when using --print with --output-format=stream-json
     if (stream) {
         args.push("--output-format", "stream-json");
+        args.push("--verbose");
     } else {
         args.push("--output-format", "json");
     }
