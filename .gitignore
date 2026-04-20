@@ -1,4 +1,5 @@
 node_modules/
-*.pid
-*.log
 .env
+*.pid
+logs/
+*.log
