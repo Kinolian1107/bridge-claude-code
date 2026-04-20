@@ -196,13 +196,50 @@ node claude-code-bridge.mjs
 
 ---
 
-## OpenClaw 整合設定
+## OpenClaw 整合
+
+### 手動設定
 
 ```
 baseUrl:  http://127.0.0.1:18793/v1
 apiKey:   claude-code-bridge-local
 api:      openai-completions
 ```
+
+### 自動設定腳本
+
+```bash
+# 設定 OpenClaw 使用 bridge-claude-code（修改 openclaw.json，可選重啟 gateway）
+./set-openclaw.sh
+
+# 移除整合並還原原始設定
+./clearset-openclaw.sh
+```
+
+`set-openclaw.sh` 執行流程：
+1. 偵測 bridge 是否執行中，並透過 `/v1/models` 取得即時模型清單
+2. 備份 `~/.openclaw/openclaw.json` 為 `openclaw.json.bak.pre-claude-bridge`
+3. 注入 `claude-cli` provider 並設為預設模型
+4. 可選重啟 OpenClaw gateway
+
+---
+
+## Hermes Agent 整合
+
+```bash
+# 設定 Hermes Agent 使用 bridge-claude-code
+./set-hermesagent.sh
+
+# 移除整合並還原原始設定
+./clearset-hermesagent.sh
+```
+
+`set-hermesagent.sh` 執行流程：
+1. 偵測 `hermes` 執行檔並確認 bridge 是否執行中
+2. 備份 `~/.hermes/config.yaml` 為 `config.yaml.bak.pre-claude-bridge`
+3. 設定 `model.provider = custom`，指向 bridge base URL 與預設模型
+4. 從 `/v1/models` 同步所有即時模型至 `custom_providers`
+5. 可選重啟 Hermes gateway
 
 ---
 

@@ -198,11 +198,48 @@ node claude-code-bridge.mjs
 
 ## OpenClaw Integration
 
+### Manual config
+
 ```
 baseUrl:  http://127.0.0.1:18793/v1
 apiKey:   claude-code-bridge-local
 api:      openai-completions
 ```
+
+### Automated setup script
+
+```bash
+# Configure OpenClaw to use bridge-claude-code (patches openclaw.json, optional gateway restart)
+./set-openclaw.sh
+
+# Remove the integration and restore previous config
+./clearset-openclaw.sh
+```
+
+`set-openclaw.sh` will:
+1. Detect a running bridge and probe `/v1/models` for the live model list
+2. Back up `~/.openclaw/openclaw.json` to `openclaw.json.bak.pre-claude-bridge`
+3. Inject the `claude-cli` provider and set it as the default model
+4. Optionally restart the OpenClaw gateway
+
+---
+
+## Hermes Agent Integration
+
+```bash
+# Configure Hermes Agent to use bridge-claude-code
+./set-hermesagent.sh
+
+# Remove the integration and restore previous config
+./clearset-hermesagent.sh
+```
+
+`set-hermesagent.sh` will:
+1. Detect the `hermes` binary and verify the bridge is running
+2. Back up `~/.hermes/config.yaml` to `config.yaml.bak.pre-claude-bridge`
+3. Set `model.provider = custom` with the bridge base URL and default model
+4. Sync all live models from `/v1/models` into `custom_providers`
+5. Optionally restart the Hermes gateway
 
 ---
 
