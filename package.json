@@ -1,6 +1,6 @@
 {
     "name": "bridge-claude-code",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "description": "OpenAI-compatible API proxy that bridges any OpenAI-compatible client to Claude Code CLI",
     "type": "module",
     "main": "claude-code-bridge.mjs",

@@ -86,7 +86,7 @@ cp .env.example .env
 返回伺服器狀態。
 
 ```json
-{ "status": "ok", "service": "claude-code-bridge", "version": "1.2.0", "model": "sonnet" }
+{ "status": "ok", "service": "claude-code-bridge", "version": "1.2.1", "model": "sonnet" }
 ```
 
 ### `GET /v1/models`
@@ -94,7 +94,7 @@ cp .env.example .env
 返回可用的模型列表。若設定 `ANTHROPIC_API_KEY` 則為即時清單，否則返回內建清單：
 
 ```
-sonnet, opus, haiku, claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001
+fable, sonnet, opus, haiku, claude-fable-5, claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5-20251001
 ```
 
 ### `POST /v1/chat/completions`

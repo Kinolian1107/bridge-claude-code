@@ -106,11 +106,15 @@ const CONFIG = {
 };
 
 // Hardcoded fallback: known Claude Code model aliases and full IDs
+// Aliases resolve to the latest snapshot of each family (see `claude --model`).
+// Kept in sync with the Claude Code model lineup (verified against CLI 2.1.x).
 const KNOWN_MODELS = [
+    "fable",
     "sonnet",
     "opus",
     "haiku",
-    "claude-opus-4-7",
+    "claude-fable-5",
+    "claude-opus-4-8",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
 ];
@@ -691,7 +695,7 @@ const server = createServer(async (req, res) => {
             JSON.stringify({
                 status: "ok",
                 service: "claude-code-bridge",
-                version: "1.2.0",
+                version: "1.2.1",
                 model: CONFIG.claudeModel,
                 permissionMode: CONFIG.permissionMode,
             })
@@ -781,7 +785,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
         : "claude.ai OAuth (set ANTHROPIC_API_KEY for live models)";
     console.log(`
 ┌──────────────────────────────────────────────────────────┐
-│              claude-code-bridge v1.2.0                    │
+│              claude-code-bridge v1.2.1                    │
 │    OpenAI-compatible API  →  Claude Code CLI             │
 ├──────────────────────────────────────────────────────────┤
 │  Endpoint:   http://${CONFIG.host}:${CONFIG.port}/v1/chat/completions  │

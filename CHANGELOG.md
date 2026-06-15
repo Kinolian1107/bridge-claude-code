@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.1 — 2026-06-15
+
+### Changed
+- **Model lineup refresh** — built-in `KNOWN_MODELS` fallback updated to the current
+  Claude Code families: added `fable` / `claude-fable-5`, bumped `claude-opus-4-7`
+  → `claude-opus-4-8`, kept `claude-sonnet-4-6` and `claude-haiku-4-5-20251001`
+- Verified CLI compatibility against Claude Code 2.1.x — all flags used by the bridge
+  (`-p`, `--model`, `--output-format`, `--verbose`, `--dangerously-skip-permissions`,
+  `--permission-mode`, `--no-session-persistence`) remain valid
+- Docs (`README*`, `.env.example`) updated to reflect the new model aliases/IDs
+
 ## v1.2.0 — 2026-04-21
 
 ### Added
