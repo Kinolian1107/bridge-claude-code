@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.3.0 — 2026-06-16
+
+### Added
+- **Anthropic Messages API compat** — `POST /v1/messages` (+ `POST /v1/messages/count_tokens`)
+  - Lets the Anthropic SDK and Claude Code itself (`ANTHROPIC_BASE_URL` → bridge) use the bridge
+  - Translation layer in `lib/anthropic-compat.mjs`: requests become the OpenAI shape and run
+    through the existing pipeline; a response adapter rewrites JSON/SSE back to Anthropic shape
+  - Streaming emits the full Anthropic event sequence (`message_start` → `content_block_*` →
+    `message_delta` → `message_stop`), including `tool_use` blocks
+- **Optional bearer auth** (`BRIDGE_API_KEY`) — when set, every endpoint except `/health` requires
+  `Authorization: Bearer <key>` or `x-api-key: <key>` (timing-safe). See `lib/auth.mjs`
+- **Prometheus `/metrics`** — requests/duration/auth-failures/inflight/uptime. See `lib/metrics.mjs`
+- **Cross-platform** — `install.sh` / `install.ps1` / `uninstall.sh` / `start.ps1` / `stop.ps1`
+- **Unit tests** — `npm test` (`node --test`) covering auth, metrics, and the Anthropic compat layer
+- **`LICENSE`**, **`CLAUDE.md`**, and a restructured `docs/` (README is now a landing page)
+
+### Changed
+- The bridge self-loads `.env` (`process.loadEnvFile`) — no longer depends on `start.sh`
+- Pure logic extracted into `lib/` modules (`auth`, `metrics`, `anthropic-compat`)
+- CORS now allows `x-api-key` and `anthropic-version` headers
+- Health endpoint reports a `supports{}` capability block; version bumped to 1.3.0
+
 ## v1.2.1 — 2026-06-15
 
 ### Changed
