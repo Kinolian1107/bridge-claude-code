@@ -10,10 +10,27 @@
   undefined，在 bind 之後印橫幅時立刻崩潰，daemon 死掉、health check 失敗。
   `workingDir` 改為依序 `CLAUDE_WORKING_DIR → HOME → USERPROFILE → cwd` 解析，
   邏輯放進新的純模組 `lib/config.mjs`（含單元測試）
+- **`install.ps1` Claude CLI 偵測** — 現在能在各種安裝方式下解析出真正的 `claude.exe`。
+  npm `-g` 安裝只會在 PATH 放 shim（`claude.cmd`/`.ps1`），真正的執行檔藏在
+  `node_modules\@anthropic-ai\claude-code\bin\claude.exe`；安裝程式改用 `npm root -g` /
+  從 shim 目錄反推來找到它，並涵蓋原生（irm）的 `~\.local\bin` 與 winget 的 `WinGet\Links`
+  位置。同時會明確**跳過 Claude Desktop 的 App Execution Alias**
+  （`%LOCALAPPDATA%\Microsoft\WindowsApps\Claude.exe`）——它會啟動 GUI，而非以 `claude -p`
+  無頭執行
+- **Windows temp 目錄洩漏** — `cleanupTempFile()` 原本用只認正斜線的 regex 取目錄，
+  在 Windows 反斜線路徑上完全不 match，導致每個 request 都殘留一個空的
+  `%TEMP%\claude-code-bridge-*` 資料夾。改用 `dirname()`；POSIX 行為不變
 
 ### 新增
 - **`uninstall.ps1`** — `uninstall.sh` 的 Windows 雙生版：停掉 bridge、移除產生的檔案
-  （`.env`、`*.pid`），並在刪除 `logs/` 前詢問（`-DeleteLogs` 可略過詢問）
+  （`.env`、`*.pid`），接著在刪除殘留的 request 資料（`%TEMP%\claude-code-bridge-*`）
+  與 `logs/` 前都會先列出實際路徑再詢問（`-DeleteLogs` 兩者皆自動確認）
+- **`start.ps1 daemon` 摘要框** — health check 成功後印出 ASCII 框，顯示應用名 + 版本
+  （從 `/health` 回讀）、首次 health check 結果、PID、endpoint、model、permission mode、
+  API key 需求，以及——綁定 `0.0.0.0` 時——wildcard 監聽範圍
+
+### 變更
+- Health endpoint 與啟動橫幅現在回報 `1.3.1`（版本常數先前一直停在 `1.3.0`）
 
 ### 文件
 - README「Try it」的 `curl` 範例改為單行，bash 與 PowerShell 都能直接貼上執行

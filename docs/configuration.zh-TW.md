@@ -18,7 +18,7 @@
 | `BRIDGE_VERBOSE` | `true` | log 完整 request/response body 與 claude-cli I/O；設 `false` 關閉 |
 | `ANTHROPIC_API_KEY` | *(空)* | 若設定，`GET /v1/models` 會回傳 Anthropic API 的即時清單 |
 
-> Windows 上請在 `.env` 設定 `CLAUDE_BIN` 指向你的 Claude Code binary（例如 `C:\Users\you\.local\bin\claude.cmd`）。
+> Windows 上 `install.ps1` 會自動偵測真正的 `claude.exe`（npm / 原生 / winget）並寫進 `CLAUDE_BIN`。若要手動設定，請指向 **`.exe`**——例如 `C:\Users\you\.local\bin\claude.exe`,或 npm 安裝的 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`——而非 `claude.cmd`/`.ps1` shim,新版 Node 無法直接 spawn 它們。
 
 ## Claude Code 認證
 
@@ -42,7 +42,7 @@ bridge 會把整個 environment 傳給 subprocess，所以 `.env`/shell 裡的 `
 BRIDGE_HOST=0.0.0.0
 ```
 
-`0.0.0.0` 會監聽每個網路介面，LAN clients 才連得進來。改完重啟（`./stop.sh && ./start.sh daemon`）。
+`0.0.0.0` 會監聽每個網路介面，LAN clients 才連得進來。改完重啟（`./stop.sh && ./start.sh daemon`）。Windows 上 `start.ps1 daemon` 會在摘要框確認 wildcard 綁定（`Listening: 0.0.0.0:<port>`）。
 
 ### 2. 一定要設 `BRIDGE_API_KEY`
 
@@ -138,9 +138,10 @@ Log stream 會在午夜自動輪替，不需重啟。設 `BRIDGE_VERBOSE=false` 
 - 確認狀態：`claude auth status`
 
 ### 找不到 Claude Code CLI
-- **Windows：** `irm https://claude.ai/install.ps1 | iex` 或 `winget install Anthropic.ClaudeCode`
+- **Windows：** `irm https://claude.ai/install.ps1 | iex`、`winget install Anthropic.ClaudeCode`,或 `npm install -g @anthropic-ai/claude-code`——三種 `install.ps1` 都能偵測
 - **Linux / macOS：** `npm install -g @anthropic-ai/claude-code`
-- 需要時在 `.env` 把 `CLAUDE_BIN` 設成完整路徑
+- **Claude Desktop** 是 GUI,不是無頭 CLI——它的 `WindowsApps\Claude.exe` alias 會啟動應用程式而非執行 `claude -p`,所以即使裝了 Claude Desktop,仍需另裝上述其中一種
+- 需要時在 `.env` 把 `CLAUDE_BIN` 設成 `claude.exe` 的完整路徑
 
 ### 第一次回應很慢
 - 第一個 request 較慢（Claude Code 啟動），後續會快。
@@ -150,10 +151,12 @@ Log stream 會在午夜自動輪替，不需重啟。設 `BRIDGE_VERBOSE=false` 
 ```bash
 ./uninstall.sh                 # Linux / macOS / WSL
 .\uninstall.ps1                # Windows（PowerShell）
-.\uninstall.ps1 -DeleteLogs    # Windows，並一併移除 logs/（不詢問）
+.\uninstall.ps1 -DeleteLogs    # Windows，並一併移除 request 資料 + logs/（不詢問）
 ```
 
-兩者都會停掉 bridge、清理產生的檔案（`.env`、`*.pid`），並在刪除 `logs/` 前詢問。
+兩者都會停掉 bridge、清理產生的檔案（`.env`、`*.pid`）。Windows 上 `uninstall.ps1`
+接著會在刪除殘留的 request 資料（`%TEMP%\claude-code-bridge-*` prompt 資料夾）與
+`logs/` 前,先列出實際路徑再詢問；`-DeleteLogs` 兩者皆自動確認。
 Linux/macOS 版還會移除 `~/.bashrc` 的 auto-start；OpenClaw / Hermes 整合用
 `./clearset-openclaw.sh` / `./clearset-hermesagent.sh` 還原。Windows 安裝程式不會
 加入任何 shell auto-start，整合腳本也僅限 Linux/macOS，因此 `uninstall.ps1` 沒有對應

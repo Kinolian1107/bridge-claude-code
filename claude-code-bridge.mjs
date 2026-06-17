@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 /**
- * claude-code-bridge v1.3 — OpenAI + Anthropic API proxy for Claude Code CLI
+ * claude-code-bridge v1.3.1 — OpenAI + Anthropic API proxy for Claude Code CLI
  *
  * Architecture:
  *   OpenAI / Anthropic clients  ──►  claude-code-bridge (port 18793)  ──►  claude -p --output-format stream-json
  *
  * This proxy server speaks both the OpenAI and Anthropic wire formats,
  * letting any OpenAI- or Anthropic-compatible client call Claude Code CLI.
+ *
+ * v1.3.1 fix:
+ *   - Windows: cleanupTempFile() now derives the temp dir via dirname() instead of
+ *     a forward-slash-only regex (/\/[^/]+$/). That regex never matched Windows
+ *     backslash paths, so every request leaked an empty %TEMP%\claude-code-bridge-*
+ *     directory. POSIX behaviour is unchanged — there dirname() returns exactly the
+ *     same string the old regex produced.
  *
  * v1.3 improvements:
  *   - Anthropic Messages API compat: POST /v1/messages (+ /v1/messages/count_tokens),
@@ -362,8 +369,9 @@ function writeTempPrompt(prompt) {
 function cleanupTempFile(filePath) {
     try {
         unlinkSync(filePath);
-        const dir = filePath.replace(/\/[^/]+$/, "");
-        rmdirSync(dir);
+        // Use dirname() — a regex like /\/[^/]+$/ only matches forward slashes,
+        // so on Windows (backslash paths) it would leave the temp dir behind.
+        rmdirSync(dirname(filePath));
     } catch { }
 }
 
@@ -777,7 +785,7 @@ const server = createServer(async (req, res) => {
             JSON.stringify({
                 status: "ok",
                 service: "claude-code-bridge",
-                version: "1.3.0",
+                version: "1.3.1",
                 model: CONFIG.claudeModel,
                 permissionMode: CONFIG.permissionMode,
                 supports: {
@@ -946,7 +954,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
         : "none — keep bridge on localhost";
     console.log(`
 ┌──────────────────────────────────────────────────────────┐
-│              claude-code-bridge v1.3.0                    │
+│              claude-code-bridge v1.3.1                    │
 │   OpenAI + Anthropic API  →  Claude Code CLI             │
 ├──────────────────────────────────────────────────────────┤
 │  Endpoint:   http://${CONFIG.host}:${CONFIG.port}/v1/chat/completions  │

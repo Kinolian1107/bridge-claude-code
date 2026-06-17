@@ -18,7 +18,7 @@ All configuration is via environment variables (or the `.env` file — the bridg
 | `BRIDGE_VERBOSE` | `true` | Log full request/response bodies and claude-cli I/O; set `false` to disable |
 | `ANTHROPIC_API_KEY` | *(empty)* | If set, `GET /v1/models` returns the live list from the Anthropic API |
 
-> On Windows, set `CLAUDE_BIN` in `.env` to your Claude Code binary (e.g. `C:\Users\you\.local\bin\claude.cmd`).
+> On Windows, `install.ps1` auto-detects the real `claude.exe` (npm / native / winget) and writes it to `CLAUDE_BIN`. If you set it by hand, point at the **`.exe`** — e.g. `C:\Users\you\.local\bin\claude.exe`, or for an npm install `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` — not the `claude.cmd`/`.ps1` shim, which modern Node can't spawn directly.
 
 ## Claude Code Authentication
 
@@ -42,7 +42,7 @@ By default the bridge binds to `127.0.0.1` — only the host machine can reach i
 BRIDGE_HOST=0.0.0.0
 ```
 
-`0.0.0.0` listens on every network interface so LAN clients can connect. Restart afterwards (`./stop.sh && ./start.sh daemon`).
+`0.0.0.0` listens on every network interface so LAN clients can connect. Restart afterwards (`./stop.sh && ./start.sh daemon`). On Windows, `start.ps1 daemon` confirms the wildcard bind in its summary box (`Listening: 0.0.0.0:<port>`).
 
 ### 2. Always set `BRIDGE_API_KEY`
 
@@ -138,9 +138,10 @@ The log stream auto-rotates at midnight without requiring a restart. Set `BRIDGE
 - Check status: `claude auth status`
 
 ### Claude Code CLI not found
-- **Windows:** `irm https://claude.ai/install.ps1 | iex` or `winget install Anthropic.ClaudeCode`
+- **Windows:** `irm https://claude.ai/install.ps1 | iex`, `winget install Anthropic.ClaudeCode`, or `npm install -g @anthropic-ai/claude-code` — `install.ps1` detects all three
 - **Linux / macOS:** `npm install -g @anthropic-ai/claude-code`
-- Set `CLAUDE_BIN` in `.env` to the full path if needed
+- The **Claude Desktop** app is a GUI, not the headless CLI — its `WindowsApps\Claude.exe` alias launches the app instead of running `claude -p`, so install one of the above even if Claude Desktop is present
+- Set `CLAUDE_BIN` in `.env` to the full path of `claude.exe` if needed
 
 ### Slow first response
 - The first request is slower (Claude Code startup). Subsequent requests are faster.
@@ -150,11 +151,13 @@ The log stream auto-rotates at midnight without requiring a restart. Set `BRIDGE
 ```bash
 ./uninstall.sh                 # Linux / macOS / WSL
 .\uninstall.ps1                # Windows (PowerShell)
-.\uninstall.ps1 -DeleteLogs    # Windows, also remove logs/ without prompting
+.\uninstall.ps1 -DeleteLogs    # Windows, also remove request data + logs/ without prompting
 ```
 
-Both stop the bridge and clean up generated files (`.env`, `*.pid`), then prompt
-before deleting `logs/`. On Linux/macOS the script also removes the auto-start
+Both stop the bridge and clean up generated files (`.env`, `*.pid`). On Windows,
+`uninstall.ps1` then lists and prompts before deleting leftover request data
+(`%TEMP%\claude-code-bridge-*` prompt folders) and the `logs/` directory; `-DeleteLogs`
+auto-confirms both. On Linux/macOS the script also removes the auto-start
 entry from `~/.bashrc`; OpenClaw / Hermes integrations are reverted by
 `./clearset-openclaw.sh` / `./clearset-hermesagent.sh`. The Windows installer adds
 no shell auto-start entry and the integrations are Linux/macOS-only, so

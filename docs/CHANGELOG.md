@@ -9,11 +9,30 @@
   the health check failed. `workingDir` now resolves through
   `CLAUDE_WORKING_DIR → HOME → USERPROFILE → cwd` via the new pure
   `lib/config.mjs` helper (with unit tests)
+- **`install.ps1` Claude CLI detection** — now resolves the real `claude.exe` across
+  every install method. An npm `-g` install puts only shims (`claude.cmd`/`.ps1`) on
+  PATH while the real binary sits in `node_modules\@anthropic-ai\claude-code\bin\claude.exe`;
+  the installer now finds it via `npm root -g` / shim-directory derivation, alongside the
+  native (irm) `~\.local\bin` and winget `WinGet\Links` locations. It explicitly **skips
+  the Claude Desktop App Execution Alias** (`%LOCALAPPDATA%\Microsoft\WindowsApps\Claude.exe`),
+  which launches the GUI instead of running `claude -p` headlessly
+- **Windows temp-dir leak** — `cleanupTempFile()` derived the temp dir with a
+  forward-slash-only regex that never matched Windows backslash paths, so every request
+  left an empty `%TEMP%\claude-code-bridge-*` folder behind. Now uses `dirname()`; POSIX
+  behaviour is unchanged
 
 ### Added
-- **`uninstall.ps1`** — Windows twin of `uninstall.sh`: stops the bridge, removes
-  generated files (`.env`, `*.pid`), and prompts before deleting `logs/`
-  (`-DeleteLogs` skips the prompt)
+- **`uninstall.ps1`** — Windows twin of `uninstall.sh`: stops the bridge and removes
+  generated files (`.env`, `*.pid`), then prompts before deleting both leftover request
+  data (`%TEMP%\claude-code-bridge-*`) and `logs/` — listing the exact paths first
+  (`-DeleteLogs` auto-confirms both)
+- **`start.ps1 daemon` summary box** — after a successful health check it prints an
+  ASCII box with the app name + version (read back from `/health`), the first
+  health-check result, PID, endpoint, model, permission mode, API-key requirement, and —
+  when bound to `0.0.0.0` — the wildcard listen scope
+
+### Changed
+- Health endpoint + startup banner now report `1.3.1` (the version constant had lagged at `1.3.0`)
 
 ### Docs
 - README "Try it" `curl` examples are now single-line so they paste into both bash
