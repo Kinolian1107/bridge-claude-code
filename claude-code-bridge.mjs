@@ -48,6 +48,7 @@ import { fileURLToPath } from "node:url";
 import { anthropicToOpenAI, createAnthropicResponseAdapter } from "./lib/anthropic-compat.mjs";
 import { isAuthorized } from "./lib/auth.mjs";
 import { createMetrics, endpointLabel } from "./lib/metrics.mjs";
+import { resolveWorkingDir } from "./lib/config.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -120,7 +121,9 @@ const CONFIG = {
     timeoutMs: parseInt(process.env.BRIDGE_TIMEOUT_MS || "300000"), // 5 minutes
     maxArgLen: parseInt(process.env.BRIDGE_MAX_ARG_LEN || "32768"),
     charsPerToken: parseFloat(process.env.BRIDGE_CHARS_PER_TOKEN || "3.0"),
-    workingDir: process.env.CLAUDE_WORKING_DIR || process.env.HOME,
+    // HOME is absent on Windows (it uses USERPROFILE); resolveWorkingDir falls
+    // back through USERPROFILE → cwd so workingDir is never undefined.
+    workingDir: resolveWorkingDir(),
     // Verbose logging: log full request/response bodies and claude-cli I/O
     // Set BRIDGE_VERBOSE=false to disable (defaults to true)
     verbose: process.env.BRIDGE_VERBOSE !== "false",
