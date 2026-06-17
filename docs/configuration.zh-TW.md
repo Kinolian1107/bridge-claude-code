@@ -138,7 +138,8 @@ Log stream 會在午夜自動輪替，不需重啟。設 `BRIDGE_VERBOSE=false` 
 - 確認狀態：`claude auth status`
 
 ### 找不到 Claude Code CLI
-- 安裝：`npm install -g @anthropic-ai/claude-code`
+- **Windows：** `irm https://claude.ai/install.ps1 | iex` 或 `winget install Anthropic.ClaudeCode`
+- **Linux / macOS：** `npm install -g @anthropic-ai/claude-code`
 - 需要時在 `.env` 把 `CLAUDE_BIN` 設成完整路徑
 
 ### 第一次回應很慢

@@ -51,8 +51,19 @@ winget install OpenJS.NodeJS.LTS
 
 ### 安裝 Claude Code CLI
 
+**Windows（推薦）：**
+```powershell
+irm https://claude.ai/install.ps1 | iex
+# 或：winget install Anthropic.ClaudeCode
+```
+
+**Linux / macOS：**
 ```bash
 npm install -g @anthropic-ai/claude-code
+```
+
+安裝後登入：
+```bash
 claude auth login
 ```
 

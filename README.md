@@ -51,8 +51,19 @@ winget install OpenJS.NodeJS.LTS
 
 ### Install the Claude Code CLI
 
+**Windows (recommended):**
+```powershell
+irm https://claude.ai/install.ps1 | iex
+# or: winget install Anthropic.ClaudeCode
+```
+
+**Linux / macOS:**
 ```bash
 npm install -g @anthropic-ai/claude-code
+```
+
+Then authenticate:
+```bash
 claude auth login
 ```
 

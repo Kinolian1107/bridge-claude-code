@@ -380,7 +380,7 @@ function classifyError(err, stderr) {
         return { status: 400, message: "Context window exceeded", type: "context_overflow" };
     }
     if (msg.includes("ENOENT") || msg.includes("not found")) {
-        return { status: 500, message: `Claude Code binary not found at: ${CONFIG.claudeBin}. Install: npm install -g @anthropic-ai/claude-code`, type: "binary_not_found" };
+        return { status: 500, message: `Claude Code binary not found at: ${CONFIG.claudeBin}. Install: https://claude.ai/download (Windows/macOS) or: npm install -g @anthropic-ai/claude-code (Linux)`, type: "binary_not_found" };
     }
     if (msg.includes("timeout") || msg.includes("SIGTERM")) {
         return { status: 504, message: "Request timed out", type: "timeout" };
@@ -443,13 +443,18 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
         `[${new Date().toISOString()}] → Request ${requestId.slice(-8)}: model=${claudeModel} stream=${stream} tools=${tools?.length || 0} prompt=${prompt.length} chars (${useStdinPipe ? "stdin-pipe" : "arg"}) permission=${CONFIG.permissionMode}`
     );
 
+    // On Windows, .ps1 files cannot be spawned directly — wrap via powershell.exe
+    const isPs1 = process.platform === "win32" && CONFIG.claudeBin.toLowerCase().endsWith(".ps1");
+    const spawnBin = isPs1 ? "powershell.exe" : CONFIG.claudeBin;
+    const spawnArgs = isPs1 ? ["-ExecutionPolicy", "Bypass", "-File", CONFIG.claudeBin, ...args] : args;
+
     verboseLog(`${requestId.slice(-8)}:CLAUDE_CMD`,
-        `${CONFIG.claudeBin} ${args.map(a => a.includes(" ") ? `'${a}'` : a).join(" ")}`
+        `${spawnBin} ${spawnArgs.map(a => a.includes(" ") ? `'${a}'` : a).join(" ")}`
         + (useStdinPipe ? `\n[prompt via stdin pipe]` : "")
     );
     verboseLog(`${requestId.slice(-8)}:PROMPT`, prompt);
 
-    const proc = spawn(CONFIG.claudeBin, args, {
+    const proc = spawn(spawnBin, spawnArgs, {
         cwd: CONFIG.workingDir,
         env: {
             ...process.env,

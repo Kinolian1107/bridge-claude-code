@@ -55,7 +55,8 @@ if (-not $ClaudeBin) {
 }
 if (-not $ClaudeBin) {
     Write-Host "[FAIL] Claude Code CLI not found. Install it first:"
-    Write-Host "       npm install -g @anthropic-ai/claude-code"
+    Write-Host "       irm https://claude.ai/install.ps1 | iex"
+    Write-Host "       # or: winget install Anthropic.ClaudeCode"
     exit 1
 }
 Write-Host "[OK] Claude Code CLI: $ClaudeBin"

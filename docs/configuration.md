@@ -138,7 +138,8 @@ The log stream auto-rotates at midnight without requiring a restart. Set `BRIDGE
 - Check status: `claude auth status`
 
 ### Claude Code CLI not found
-- Install: `npm install -g @anthropic-ai/claude-code`
+- **Windows:** `irm https://claude.ai/install.ps1 | iex` or `winget install Anthropic.ClaudeCode`
+- **Linux / macOS:** `npm install -g @anthropic-ai/claude-code`
 - Set `CLAUDE_BIN` in `.env` to the full path if needed
 
 ### Slow first response

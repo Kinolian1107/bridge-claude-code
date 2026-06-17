@@ -55,7 +55,7 @@ if command -v claude &>/dev/null; then
 elif [ -x "$HOME/.local/bin/claude" ]; then
   CLAUDE_BIN="$HOME/.local/bin/claude"
 else
-  fail "Claude Code CLI not found. Install it first: npm install -g @anthropic-ai/claude-code"
+  fail "Claude Code CLI not found. Install it first: npm install -g @anthropic-ai/claude-code  (Linux/macOS) | Windows: irm https://claude.ai/install.ps1 | iex"
 fi
 ok "Claude Code CLI: $CLAUDE_BIN ($("$CLAUDE_BIN" --version 2>/dev/null || echo 'version unknown'))"
 

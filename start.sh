@@ -39,7 +39,9 @@ rm -f "$PIDFILE"
 # Verify claude CLI is available
 if ! command -v "${CLAUDE_BIN:-claude}" &>/dev/null; then
     echo "✗ Error: 'claude' CLI not found in PATH"
-    echo "  Install: npm install -g @anthropic-ai/claude-code"
+    echo "  Install (Linux/macOS): npm install -g @anthropic-ai/claude-code"
+    echo "  Install (Windows):     irm https://claude.ai/install.ps1 | iex"
+    echo "                      or: winget install Anthropic.ClaudeCode"
     echo "  Or set CLAUDE_BIN to the path of the claude binary"
     exit 1
 fi
