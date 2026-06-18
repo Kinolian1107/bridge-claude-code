@@ -131,16 +131,17 @@ if (-not $ActiveKey -and (Test-Path $EnvFile)) {
     $m = Select-String -Path $EnvFile -Pattern '^\s*BRIDGE_API_KEY\s*=\s*(\S+)' | Select-Object -First 1
     if ($m) { $ActiveKey = $m.Matches[0].Groups[1].Value }
 }
-# cmd.exe and PowerShell quote JSON differently and there is no single form that
-# works in both, so emit a line per shell:
-#   - PowerShell: single-quote the JSON (double quotes pass through intact)
-#   - cmd.exe / bash: backslash-escape the inner double quotes
+# Each shell quotes JSON differently — emit a separate example per shell:
+#   - PowerShell / bash: single-quote the JSON (double quotes pass through intact,
+#     and bash avoids '!' history-expansion inside single quotes)
+#   - cmd.exe: backslash-escape the inner double quotes
 $authHdr   = if ($ActiveKey) { ' -H "Authorization: Bearer ' + $ActiveKey + '"' } else { '' }
 $jsonPlain = '{"model":"sonnet","messages":[{"role":"user","content":"Hello!"}]}'
 $jsonEsc   = '{\"model\":\"sonnet\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}]}'
 $urlBase   = 'http://' + $TestHost + ':' + $BridgePort
 $TestHealthCmd = 'curl ' + $urlBase + '/health'
 $TestChatPS    = 'curl.exe ' + $urlBase + '/v1/chat/completions -H "Content-Type: application/json"' + $authHdr + " -d '" + $jsonPlain + "'"
+$TestChatBash  = 'curl ' + $urlBase + '/v1/chat/completions -H "Content-Type: application/json"' + $authHdr + " -d '" + $jsonPlain + "'"
 $TestChatCmd   = 'curl ' + $urlBase + '/v1/chat/completions -H "Content-Type: application/json"' + $authHdr + ' -d "' + $jsonEsc + '"'
 function Write-QuickTests {
     Write-Host "  Quick test (copy-paste):"
@@ -148,7 +149,9 @@ function Write-QuickTests {
     Write-Host "      $TestHealthCmd"
     Write-Host "    chat - PowerShell:"
     Write-Host "      $TestChatPS"
-    Write-Host "    chat - cmd.exe / bash:"
+    Write-Host "    chat - bash:"
+    Write-Host "      $TestChatBash"
+    Write-Host "    chat - cmd.exe:"
     Write-Host "      $TestChatCmd"
 }
 
