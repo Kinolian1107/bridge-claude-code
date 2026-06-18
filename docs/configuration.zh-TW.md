@@ -35,6 +35,8 @@ bridge 會把整個 environment 傳給 subprocess，所以 `.env`/shell 裡的 `
 
 預設 bridge 綁定 `127.0.0.1`——只有本機能連。要讓同網段其他電腦把它當 endpoint 用，在跑 bridge 的這台機器做三件事：
 
+> **Windows 上 `start.ps1` 會自動幫你做掉大部分(v1.3.2)。** 只要設好 `BRIDGE_HOST=0.0.0.0`(步驟 1)再跑 `.\start.ps1 daemon`,它就會:沒設 key 時自動產生 `BRIDGE_API_KEY` 寫進 `.env`(步驟 2)、產生會自動提權的 `firewall-rule-add-port-<port>.ps1` / `firewall-rule-delete-port-<port>.ps1` 輔助腳本給步驟 3(跑 *add* 那個 —— 它會透過 UAC 以管理員重啟並在結束前暫停讓你看結果)、把主機 LAN IPv4 以 `Remote:` endpoint 顯示,並印出可複製的 `curl` 測試(PowerShell + cmd.exe 兩種寫法)且自動帶上 bearer 標頭。
+
 ### 1. 綁定到所有介面
 
 ```bash

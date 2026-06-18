@@ -3,3 +3,6 @@ node_modules/
 *.pid
 logs/
 *.log
+# Auto-generated per-port firewall helpers (written by start.ps1 when BRIDGE_HOST=0.0.0.0)
+firewall-rule-add-port-*.ps1
+firewall-rule-delete-port-*.ps1

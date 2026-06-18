@@ -35,6 +35,8 @@ The bridge passes the full environment to the subprocess, so an `ANTHROPIC_API_K
 
 By default the bridge binds to `127.0.0.1` — only the host machine can reach it. To let other computers on the same network use it as an endpoint, do three things on the machine running the bridge:
 
+> **On Windows, `start.ps1` automates most of this (v1.3.2).** Once you set `BRIDGE_HOST=0.0.0.0` (step 1) and run `.\start.ps1 daemon`, it will: generate a `BRIDGE_API_KEY` into `.env` if you haven't set one (step 2), write self-elevating `firewall-rule-add-port-<port>.ps1` / `firewall-rule-delete-port-<port>.ps1` helpers for step 3 (run the *add* one — it relaunches as Administrator via UAC and pauses so you can read the result), show the host LAN IPv4 as a `Remote:` endpoint, and print copy-paste `curl` tests (PowerShell + cmd.exe forms) with the bearer header already filled in.
+
 ### 1. Bind to all interfaces
 
 ```bash

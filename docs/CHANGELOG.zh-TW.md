@@ -2,6 +2,20 @@
 
 # Changelog
 
+## v1.3.2 — 2026-06-18
+
+### 新增
+- **`start.ps1` LAN 曝露輔助** — 當 `BRIDGE_HOST=0.0.0.0` 時,`start.ps1` 現在會:
+  - 若沒設 `BRIDGE_API_KEY` 就**自動產生一組寫進 `.env`**(在 bridge 啟動前,確保開放的 LAN port
+    不會沒有驗證),並在摘要框顯示;
+  - 產生**會自動提權**的 `firewall-rule-add-port-<port>.ps1` /
+    `firewall-rule-delete-port-<port>.ps1` 輔助腳本 —— 非管理員時透過 UAC 重啟自己,且**結束前會
+    暫停**讓你看清結果;
+  - 解析**主機 LAN IPv4**,以 `Remote:` endpoint 顯示;
+  - 印出 `/health` 與 `/v1/chat/completions` 的**可複製 `curl` 測試** —— PowerShell 單引號版與
+    cmd.exe/bash 跳脫雙引號版(沒有單一寫法兩邊通用),有 key 時自動帶上 bearer 標頭。
+- `.gitignore` 忽略產生的 `firewall-rule-*-port-*.ps1` 腳本。
+
 ## v1.3.1 — 2026-06-17
 
 ### 修正

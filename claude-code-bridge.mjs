@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
- * claude-code-bridge v1.3.1 — OpenAI + Anthropic API proxy for Claude Code CLI
+ * claude-code-bridge v1.3.2 — OpenAI + Anthropic API proxy for Claude Code CLI
  *
  * Architecture:
  *   OpenAI / Anthropic clients  ──►  claude-code-bridge (port 18793)  ──►  claude -p --output-format stream-json
  *
  * This proxy server speaks both the OpenAI and Anthropic wire formats,
  * letting any OpenAI- or Anthropic-compatible client call Claude Code CLI.
+ *
+ * v1.3.2: Windows start.ps1 LAN helpers — auto-generates BRIDGE_API_KEY when exposing on
+ *   0.0.0.0, writes self-elevating firewall add/delete scripts, shows the host LAN IPv4 as a
+ *   Remote endpoint, and prints copy-paste curl tests (start.ps1 / .gitignore; see CHANGELOG).
  *
  * v1.3.1 fix:
  *   - Windows: cleanupTempFile() now derives the temp dir via dirname() instead of
@@ -785,7 +789,7 @@ const server = createServer(async (req, res) => {
             JSON.stringify({
                 status: "ok",
                 service: "claude-code-bridge",
-                version: "1.3.1",
+                version: "1.3.2",
                 model: CONFIG.claudeModel,
                 permissionMode: CONFIG.permissionMode,
                 supports: {
@@ -954,7 +958,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
         : "none — keep bridge on localhost";
     console.log(`
 ┌──────────────────────────────────────────────────────────┐
-│              claude-code-bridge v1.3.1                    │
+│              claude-code-bridge v1.3.2                    │
 │   OpenAI + Anthropic API  →  Claude Code CLI             │
 ├──────────────────────────────────────────────────────────┤
 │  Endpoint:   http://${CONFIG.host}:${CONFIG.port}/v1/chat/completions  │

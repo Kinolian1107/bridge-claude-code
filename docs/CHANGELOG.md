@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.3.2 — 2026-06-18
+
+### Added
+- **`start.ps1` LAN-exposure helpers** — when `BRIDGE_HOST=0.0.0.0`, `start.ps1` now:
+  - **generates a `BRIDGE_API_KEY`** into `.env` if none is set (before the bridge starts, so an
+    open LAN port is never left unauthenticated) and shows it in the summary;
+  - writes **self-elevating** `firewall-rule-add-port-<port>.ps1` /
+    `firewall-rule-delete-port-<port>.ps1` helpers — they relaunch via UAC if not Administrator
+    and **pause before closing** so the result stays readable;
+  - resolves the **host LAN IPv4** and shows it as a `Remote:` endpoint;
+  - prints **copy-paste `curl` tests** for `/health` and `/v1/chat/completions` — a PowerShell
+    single-quote form and a cmd.exe/bash backslash-escaped form (no single quoting works in both),
+    with the bearer header auto-filled when a key is in effect.
+- `.gitignore` ignores the generated `firewall-rule-*-port-*.ps1` helpers.
+
 ## v1.3.1 — 2026-06-17
 
 ### Fixed
