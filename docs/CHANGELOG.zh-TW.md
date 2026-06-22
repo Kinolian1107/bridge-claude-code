@@ -2,6 +2,36 @@
 
 # Changelog
 
+## v1.5.0 — 2026-06-22
+
+### 修正
+- **非串流（`--output-format json`）回應現在能正確解析。** Claude Code 2.1.x 回傳的是一個事件
+  **陣列**；舊的 parser 假設只有單一物件,於是把原始 JSON 當成訊息內容直接丟出來。解析改放進純模組
+  `lib/cli-output.mjs`,它會找出 `result` 事件並取出 assistant 文字。Token 用量也改從該事件的
+  `usage.*` / `total_cost_usd` 讀取,而非用字元數估算。
+
+### 新增
+- **Tool Bridge Mode 強化**（`lib/tool-bridge.mjs`）:
+  - **大括號配對的 `<tool_call>` 解析** — 巢狀物件 / 陣列參數不再被截斷而靜默遺失。
+  - **平行工具呼叫** — 同一回合內多個 `<tool_call>` 區塊會一起回傳,且每筆都有正確的 `index`。
+  - **協定 STOP 規則** — 指示模型在輸出 `<tool_call>` 區塊後就停止,不再幻想出呼叫端尚未執行的
+    「結果」。
+  - **逐步串流** 文字 + `tool_calls`(透過 scanner,不再只是緩衝到最後一次送出）。
+- **可觀測性** — 工具呼叫的解析異常會計入 `/metrics`
+  (`bridge_tool_parse_anomalies_total{type}`)並寫進 log（預設截斷;設
+  `BRIDGE_TOOL_PARSE_LOG_FULL=1` 取得完整片段）。新增指標 `bridge_tool_calls_total`、
+  `bridge_tokens_total{type}`、`bridge_cost_usd_total`。
+- **逐次呼叫的用量 CSV**（`BRIDGE_USAGE_LOG`,預設 `./logs/token-usage.csv`,設 `off` 停用）—
+  每個 request 追加一列:timestamp、source IP、model、tool mode、stream、input/output/cache
+  tokens、`total_cost_usd`、duration、turn 數、tool call 數、finish reason、status。讓共用主機的
+  管理者可追蹤用量與成本。**只記 metadata——絕不記錄 request/response 內容。** 每個檔案請只用一個
+  寫入 process。見 [configuration](configuration.zh-TW.md#逐次呼叫用量-log--tool-bridge-解析v150)。
+
+### 變更
+- **內部** — 抽出純粹、有單元測試的模組 `lib/tool-bridge.mjs`、`lib/cli-output.mjs`、
+  `lib/usage-log.mjs`。向後相容:純聊天與既有的 `agent` / `llm` 模式行為不變,且串流無工具路徑
+  逐位元組相同。
+
 ## v1.4.1 — 2026-06-22
 
 ### 修正

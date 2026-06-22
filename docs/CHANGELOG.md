@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.5.0 — 2026-06-22
+
+### Fixed
+- **Non-stream (`--output-format json`) responses now parse correctly.** Claude Code 2.1.x returns
+  a JSON **array** of events; the old parser assumed a single object, so it dumped the raw JSON as
+  the message content. Parsing now lives in the pure `lib/cli-output.mjs` module, which finds the
+  `result` event and extracts the assistant text. Token usage is read from that event's `usage.*` /
+  `total_cost_usd` instead of a character-count estimate.
+
+### Added
+- **Tool Bridge Mode hardening** (`lib/tool-bridge.mjs`):
+  - **Brace-balanced `<tool_call>` parsing** — nested-object / array arguments are no longer
+    truncated and silently dropped.
+  - **Parallel tool calls** — multiple `<tool_call>` blocks in one turn are returned together with
+    the correct `index` per call.
+  - **Protocol STOP rule** — the model is instructed to stop after emitting the `<tool_call>`
+    blocks, so it no longer hallucinates "results" for calls the caller hasn't run yet.
+  - **Incremental streaming** of text + `tool_calls` via a scanner (no longer buffer-and-flush only).
+- **Observability** — tool-call parse anomalies are counted in `/metrics`
+  (`bridge_tool_parse_anomalies_total{type}`) and logged (truncated by default; set
+  `BRIDGE_TOOL_PARSE_LOG_FULL=1` for full snippets). New metrics `bridge_tool_calls_total`,
+  `bridge_tokens_total{type}`, and `bridge_cost_usd_total`.
+- **Per-call usage CSV** (`BRIDGE_USAGE_LOG`, default `./logs/token-usage.csv`, `off` to disable) —
+  appends one row per request: timestamp, source IP, model, tool mode, stream, input/output/cache
+  tokens, `total_cost_usd`, duration, num turns, tool calls, finish reason, status. Lets a
+  shared-host admin track usage and cost. **Metadata only — never request/response content.** Use
+  one writer process per file. See [configuration](configuration.md#per-call-usage-log--tool-bridge-parsing-v150).
+
+### Changed
+- **Internal** — extracted pure, unit-tested modules `lib/tool-bridge.mjs`, `lib/cli-output.mjs`,
+  and `lib/usage-log.mjs`. Backward compatible: no behaviour change for plain chat or the existing
+  `agent` / `llm` modes, and the streaming no-tools path is byte-identical.
+
 ## v1.4.1 — 2026-06-22
 
 ### Fixed

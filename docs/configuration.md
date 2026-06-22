@@ -17,6 +17,8 @@ All configuration is via environment variables (or the `.env` file — the bridg
 | `BRIDGE_TIMEOUT_MS` | `300000` | Request timeout (5 min) |
 | `BRIDGE_MAX_ARG_LEN` | `32768` | Prompts longer than this are piped via stdin (avoids `E2BIG`) |
 | `BRIDGE_VERBOSE` | `true` | Log full request/response bodies and claude-cli I/O; set `false` to disable |
+| `BRIDGE_USAGE_LOG` | `./logs/token-usage.csv` | **v1.5** — per-call usage CSV; one metadata-only row per request (tokens, cost, duration, …). Set `off` to disable. One writer process per file. See [Per-call usage log](#per-call-usage-log--tool-bridge-parsing-v150) |
+| `BRIDGE_TOOL_PARSE_LOG_FULL` | `0` | **v1.5** — when a `<tool_call>` block fails to parse, the logged snippet is truncated to 200 chars by default; set `1` to log the full untruncated snippet when debugging |
 | `ANTHROPIC_API_KEY` | *(empty)* | If set, `GET /v1/models` returns the live list from the Anthropic API |
 
 > On Windows, `install.ps1` auto-detects the real `claude.exe` (npm / native / winget) and writes it to `CLAUDE_BIN`. If you set it by hand, point at the **`.exe`** — e.g. `C:\Users\you\.local\bin\claude.exe`, or for an npm install `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` — not the `claude.cmd`/`.ps1` shim, which modern Node can't spawn directly.
@@ -216,6 +218,34 @@ Pointing Claude Code, OpenCode, RooCode, Continue.dev, etc. at the bridge? Those
 - **User-level Claude Code config** — v1.4.1 already isolates the working dir, so a *project-level* `CLAUDE.md` no longer leaks. But the *user-level* `~/.claude/CLAUDE.md` and `~/.claude/settings.json` (custom system prompt, output style) are loaded regardless of cwd and still shape responses. For a fully reproducible model endpoint, run the LLM instance under a clean `HOME` / Claude Code config.
 - **The agent persona / hallucinated tools** — responses still come from Claude Code's coding-agent system prompt, so answers can be terse or coding-flavoured. Because of the user-level config above, Claude may even *claim* to have tools (e.g. "I can use Read/Bash") — but the real tool registry is empty (verified `tools:[]`), so any such call would simply not exist. It is a cosmetic confusion, not host access.
 - **Streaming of `tools[]` calls** — when a request includes `tools[]`, the response is buffered and the `tool_calls` are emitted at the end (not token-by-token), with parallel calls in a single delta and no per-call `index`. Plain (no-`tools[]`) requests stream normally.
+
+## Per-call usage log & Tool Bridge parsing (v1.5.0)
+
+### Per-call usage CSV (`BRIDGE_USAGE_LOG`)
+
+When `BRIDGE_USAGE_LOG` is set (it defaults to `./logs/token-usage.csv`; set it to `off` to disable), the bridge appends **one row per request** so a shared-host admin can track usage and cost over time. The file is plain CSV with this header:
+
+```
+timestamp_iso,request_id,endpoint,client_ip,model,tool_mode,stream,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost_usd,duration_ms,num_turns,tool_calls,finish_reason,status
+```
+
+- **Metadata only** — token counts, cost, timing, and request shape. The prompt, the response text, tool arguments, and tool results are **never** written to this file.
+- Token counts and `total_cost_usd` come from the `claude` result event's `usage.*` / `total_cost_usd` (the same numbers the [Prometheus metrics](#) report), not an estimate.
+- **One writer process per file.** The bridge appends with no inter-process locking, so if you run two bridge instances pointed at the same path their rows can interleave. Give each instance its own `BRIDGE_USAGE_LOG` path (or leave one on the default and point the other elsewhere).
+
+```bash
+# Tail the running cost
+column -s, -t logs/token-usage.csv | less -S
+```
+
+### Tool Bridge Mode parsing & anomalies
+
+In Tool Bridge Mode (a request that includes `tools[]`), the bridge parses the `<tool_call>` blocks Claude emits back into OpenAI `tool_calls`. The parser is brace-balanced, so nested-object / array arguments are kept intact, and multiple blocks in one turn are returned as parallel calls each with the correct `index`.
+
+When a `<tool_call>` block can't be parsed (malformed JSON, a near-miss that almost matched the protocol, …), the bridge:
+
+- **counts it in `/metrics`** as `bridge_tool_parse_anomalies_total{type="…"}` (e.g. `type="invalid_json"`, `type="near_miss"`), alongside the new `bridge_tool_calls_total`, `bridge_tokens_total{type}`, and `bridge_cost_usd_total` counters;
+- **logs a snippet** of the offending text. The snippet is **truncated to 200 chars by default** to avoid leaking prompt/response data in shared deployments; set `BRIDGE_TOOL_PARSE_LOG_FULL=1` to log the full untruncated snippet while debugging a parsing issue.
 
 ## Logs
 

@@ -1,12 +1,31 @@
 #!/usr/bin/env node
 /**
- * claude-code-bridge v1.4.1 — OpenAI + Anthropic API proxy for Claude Code CLI
+ * claude-code-bridge v1.5.0 — OpenAI + Anthropic API proxy for Claude Code CLI
  *
  * Architecture:
  *   OpenAI / Anthropic clients  ──►  claude-code-bridge (port 18793)  ──►  claude -p --output-format stream-json
  *
  * This proxy server speaks both the OpenAI and Anthropic wire formats,
  * letting any OpenAI- or Anthropic-compatible client call Claude Code CLI.
+ *
+ * v1.5.0: Tool Bridge Mode hardening + non-stream parser fix + usage observability —
+ *   - Fixed non-stream (--output-format json) parsing: Claude Code 2.1.x returns a JSON
+ *     *array* of events; the old parser assumed a single object and dumped raw JSON as the
+ *     message. Now parsed correctly (lib/cli-output.mjs); token usage read from the result
+ *     event's usage.* / total_cost_usd instead of a character estimate.
+ *   - Tool Bridge: brace-balanced <tool_call> parsing (nested-object/array arguments no longer
+ *     truncated), parallel tool calls (multiple blocks per turn, correct index), a protocol
+ *     STOP rule (no hallucinated "results" after the blocks), and incremental streaming of
+ *     text + tool_calls via a scanner.
+ *   - Observability: tool-call parse anomalies counted in /metrics
+ *     (bridge_tool_parse_anomalies_total{type}) and logged (truncated; BRIDGE_TOOL_PARSE_LOG_FULL=1
+ *     for full snippets). New metrics bridge_tool_calls_total, bridge_tokens_total{type},
+ *     bridge_cost_usd_total.
+ *   - Per-call usage CSV: BRIDGE_USAGE_LOG (default ./logs/token-usage.csv, 'off' to disable)
+ *     appends one metadata-only row per request so a shared-host admin can track usage and cost.
+ *   - Internal: extracted pure, unit-tested lib/tool-bridge.mjs, lib/cli-output.mjs,
+ *     lib/usage-log.mjs; backward compatible (plain chat / agent / llm unchanged; the streaming
+ *     no-tools path is byte-identical).
  *
  * v1.4.1: LLM mode hardening —
  *   - True tool isolation: --tools "" alone still leaks LSP + MCP connector tools that run on
@@ -839,7 +858,7 @@ const server = createServer(async (req, res) => {
             JSON.stringify({
                 status: "ok",
                 service: "claude-code-bridge",
-                version: "1.4.1",
+                version: "1.5.0",
                 model: CONFIG.claudeModel,
                 toolMode: CONFIG.toolMode,
                 permissionMode: CONFIG.permissionMode,
@@ -1011,7 +1030,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
         : "none — keep bridge on localhost";
     console.log(`
 ┌──────────────────────────────────────────────────────────┐
-│              claude-code-bridge v1.4.1                    │
+│              claude-code-bridge v1.5.0                    │
 │   OpenAI + Anthropic API  →  Claude Code CLI             │
 ├──────────────────────────────────────────────────────────┤
 │  Endpoint:   http://${CONFIG.host}:${CONFIG.port}/v1/chat/completions  │

@@ -17,6 +17,8 @@
 | `BRIDGE_TIMEOUT_MS` | `300000` | request timeout（5 分鐘） |
 | `BRIDGE_MAX_ARG_LEN` | `32768` | 超過此長度的 prompt 改走 stdin（避免 `E2BIG`） |
 | `BRIDGE_VERBOSE` | `true` | log 完整 request/response body 與 claude-cli I/O；設 `false` 關閉 |
+| `BRIDGE_USAGE_LOG` | `./logs/token-usage.csv` | **v1.5** — 逐次呼叫的用量 CSV;每個 request 一列、只記 metadata(tokens、成本、duration……）。設 `off` 停用。每個檔案只用一個寫入 process。見 [逐次呼叫用量 log](#逐次呼叫用量-log--tool-bridge-解析v150) |
+| `BRIDGE_TOOL_PARSE_LOG_FULL` | `0` | **v1.5** — 當 `<tool_call>` 區塊解析失敗時,寫進 log 的片段預設截斷成 200 字元;除錯時設 `1` 記錄完整未截斷片段 |
 | `ANTHROPIC_API_KEY` | *(空)* | 若設定，`GET /v1/models` 會回傳 Anthropic API 的即時清單 |
 
 > Windows 上 `install.ps1` 會自動偵測真正的 `claude.exe`（npm / 原生 / winget）並寫進 `CLAUDE_BIN`。若要手動設定，請指向 **`.exe`**——例如 `C:\Users\you\.local\bin\claude.exe`,或 npm 安裝的 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`——而非 `claude.cmd`/`.ps1` shim,新版 Node 無法直接 spawn 它們。
@@ -216,6 +218,34 @@ BRIDGE_HOST=0.0.0.0   BRIDGE_PORT=18794 BRIDGE_TOOL_MODE=llm \
 - **User 層級的 Claude Code 設定** — v1.4.1 已隔離工作目錄,所以 *project 層級* 的 `CLAUDE.md` 不再滲入。但 *user 層級* 的 `~/.claude/CLAUDE.md` 與 `~/.claude/settings.json`(自訂 system prompt、output style)不論 cwd 都會載入,仍會影響回應。要完全可重現的模型端點,用一份乾淨的 `HOME` / Claude Code 設定來跑 LLM 實例。
 - **Agent 人格 / 幻想出來的工具** — 回應仍出自 Claude Code 的 coding-agent system prompt,所以可能偏簡短、偏寫程式口吻。又因為上面那條 user 層級設定,Claude 甚至可能*聲稱*自己有工具(例如「我可以用 Read/Bash」)——但真正的工具註冊表是空的(已驗證 `tools:[]`),所以那種呼叫根本不存在。這只是表面上的混淆,不是 host 存取。
 - **`tools[]` 呼叫的串流** — 當 request 帶 `tools[]` 時,回應會被緩衝,`tool_calls` 在最後一次送出(不是逐 token),多個平行呼叫擠在同一個 delta、且沒有逐筆的 `index`。純文字(無 `tools[]`)的 request 則正常串流。
+
+## 逐次呼叫用量 log 與 Tool Bridge 解析（v1.5.0）
+
+### 逐次呼叫用量 CSV（`BRIDGE_USAGE_LOG`）
+
+當 `BRIDGE_USAGE_LOG` 有設定（預設 `./logs/token-usage.csv`;設 `off` 停用）時,bridge 會在**每個 request 追加一列**,讓共用主機的管理者能長期追蹤用量與成本。檔案是純 CSV,標頭如下:
+
+```
+timestamp_iso,request_id,endpoint,client_ip,model,tool_mode,stream,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost_usd,duration_ms,num_turns,tool_calls,finish_reason,status
+```
+
+- **只記 metadata** — token 數、成本、時間與 request 形狀。prompt、回應文字、工具參數、工具結果**絕不**寫進這個檔案。
+- token 數與 `total_cost_usd` 來自 `claude` 的 result 事件的 `usage.*` / `total_cost_usd`(和 [Prometheus 指標](#)回報的是同一組數字),不是估算值。
+- **每個檔案只用一個寫入 process。** bridge 是直接 append、沒有跨 process 鎖,所以若兩個 bridge 實例指向同一個路徑,它們的列可能交錯。請給每個實例各自的 `BRIDGE_USAGE_LOG` 路徑(或一個留預設、另一個指到別處)。
+
+```bash
+# 追蹤累計成本
+column -s, -t logs/token-usage.csv | less -S
+```
+
+### Tool Bridge Mode 解析與異常
+
+在 Tool Bridge Mode 下(request 帶了 `tools[]`),bridge 會把 Claude 回傳的 `<tool_call>` 區塊解析回 OpenAI `tool_calls`。parser 採大括號配對,所以巢狀物件 / 陣列參數會保持完整,同一回合的多個區塊會以平行呼叫回傳、各帶正確的 `index`。
+
+當某個 `<tool_call>` 區塊無法解析(JSON 格式錯誤、差一點符合協定的 near-miss……)時,bridge 會:
+
+- **在 `/metrics` 計數** `bridge_tool_parse_anomalies_total{type="…"}`(例如 `type="invalid_json"`、`type="near_miss"`),與新增的 `bridge_tool_calls_total`、`bridge_tokens_total{type}`、`bridge_cost_usd_total` 一起;
+- **記錄一段片段**。該片段**預設截斷成 200 字元**,以免在共用部署中外洩 prompt/response 資料;除錯解析問題時設 `BRIDGE_TOOL_PARSE_LOG_FULL=1` 記錄完整未截斷片段。
 
 ## Logs
 
