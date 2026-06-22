@@ -60,3 +60,20 @@ test("unparseable → safe fallback (raw text, no usage)", () => {
   assert.equal(r.usage, null);
   assert.equal(r.isError, false);
 });
+
+test("surfaces cost / duration / num_turns from the result event", () => {
+  const out = JSON.stringify([
+    { type: "result", result: "x", total_cost_usd: 0.0484, duration_ms: 4075, num_turns: 1, usage: { input_tokens: 2 } },
+  ]);
+  const r = parseClaudeJsonOutput(out);
+  assert.equal(r.costUsd, 0.0484);
+  assert.equal(r.durationMs, 4075);
+  assert.equal(r.numTurns, 1);
+});
+
+test("cost/duration/num_turns are null when absent", () => {
+  const r = parseClaudeJsonOutput(JSON.stringify([{ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }]));
+  assert.equal(r.costUsd, null);
+  assert.equal(r.durationMs, null);
+  assert.equal(r.numTurns, null);
+});
