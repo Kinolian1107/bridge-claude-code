@@ -20,6 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE_PORT="${BRIDGE_PORT:-18793}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
 CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-bypassPermissions}"
+# 'llm' (pure model, no host tools) is the safe default for shared / LAN use.
+# Set BRIDGE_TOOL_MODE=agent ./install.sh for a single-machine full-toolset setup.
+BRIDGE_TOOL_MODE="${BRIDGE_TOOL_MODE:-llm}"
 
 # ── Colors ───────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -69,6 +72,8 @@ fi
 # ── 2. Create env file ───────────────────────────────────────
 echo ""
 info "Selected model: ${CYAN}${CLAUDE_MODEL}${NC}  (override with CLAUDE_MODEL=<id> ./install.sh)"
+if [ "$BRIDGE_TOOL_MODE" = "llm" ]; then MODE_NOTE="pure model, no host tools"; else MODE_NOTE="full Claude Code toolset on this host"; fi
+info "Tool mode:      ${CYAN}${BRIDGE_TOOL_MODE}${NC}  ($MODE_NOTE — override with BRIDGE_TOOL_MODE=agent ./install.sh)"
 ENV_FILE="$SCRIPT_DIR/.env"
 if [ -f "$ENV_FILE" ]; then
   warn ".env already exists — leaving it untouched"
@@ -78,6 +83,10 @@ else
 BRIDGE_PORT=${BRIDGE_PORT}
 CLAUDE_MODEL=${CLAUDE_MODEL}
 CLAUDE_BIN=${CLAUDE_BIN}
+# Tool mode: llm (pure model, no host tools - safe default for shared/LAN use)
+#            or agent (full Claude Code toolset running on THIS host)
+BRIDGE_TOOL_MODE=${BRIDGE_TOOL_MODE}
+# Permission mode below only applies in agent mode (ignored when llm)
 CLAUDE_PERMISSION_MODE=${CLAUDE_PERMISSION_MODE}
 # BRIDGE_API_KEY=   # set before exposing on a LAN (openssl rand -hex 32)
 EOF

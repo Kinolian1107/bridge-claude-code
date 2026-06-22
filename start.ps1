@@ -172,7 +172,10 @@ if ($Mode -eq "daemon") {
     }
 
     # ── Summary box (pure-ASCII so it renders on any Windows console) ──
-    $W = 58
+    # Width holds the longest line — the Remote endpoint with a full path:
+    # "  Remote:     http://<15-char IPv4>:<5-digit port>/v1/chat/completions"
+    # = 14 + 7 + 15 + 6 + 20 = 62, so 64 keeps a small right margin and stays tidy.
+    $W = 64
     function BLine($t)   { if ($t.Length -gt $W) { $t = $t.Substring(0, $W) }; "|" + $t.PadRight($W) + "|" }
     function BCenter($t) { if ($t.Length -gt $W) { $t = $t.Substring(0, $W) }; $p = $W - $t.Length; $l = [int]($p / 2); "|" + (" " * $l) + $t + (" " * ($p - $l)) + "|" }
     $border = "+" + ("-" * $W) + "+"
@@ -192,9 +195,13 @@ if ($Mode -eq "daemon") {
     # wildcard scope + the host LAN IPv4 explicit so LAN clients know where to go.
     if ($BridgeHost -eq "0.0.0.0") {
         Write-Host (BLine "  Listening:  0.0.0.0:$BridgePort (wildcard - all interfaces)")
-        if ($LanIp) { Write-Host (BLine "  Remote:     http://${LanIp}:$BridgePort") }
+        if ($LanIp) { Write-Host (BLine "  Remote:     http://${LanIp}:$BridgePort/v1/chat/completions") }
     }
     Write-Host (BLine "  Model:      $($health.model)")
+    # Tool mode tells LAN clients whether the bridge runs host tools (agent) or
+    # behaves as a pure model (llm). /health carries it (v1.4).
+    $modeLabel = if ($health.toolMode -eq "llm") { "llm (pure LLM - no host tools)" } else { "agent (host tools enabled)" }
+    Write-Host (BLine "  ToolMode:   $modeLabel")
     Write-Host (BLine "  Permission: $($health.permissionMode)")
     Write-Host (BLine "  API key:    $apiKeyLabel")
     Write-Host (BLine "  Logs:       .\logs\")

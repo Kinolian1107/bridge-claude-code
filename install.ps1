@@ -16,6 +16,10 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BridgePort = if ($env:BRIDGE_PORT) { $env:BRIDGE_PORT } else { "18793" }
 $ClaudeModel = if ($env:CLAUDE_MODEL) { $env:CLAUDE_MODEL } else { "sonnet" }
 $PermissionMode = if ($env:CLAUDE_PERMISSION_MODE) { $env:CLAUDE_PERMISSION_MODE } else { "bypassPermissions" }
+# Tool mode default: 'llm' (pure model, no host tools) is the safe default for
+# shared / LAN use. Set $env:BRIDGE_TOOL_MODE='agent' before install for a
+# single-machine setup that wants the full Claude Code toolset on this host.
+$ToolMode = if ($env:BRIDGE_TOOL_MODE) { $env:BRIDGE_TOOL_MODE } else { "llm" }
 
 Write-Host ""
 Write-Host "+----------------------------------------------------+"
@@ -123,6 +127,9 @@ Write-Host "[OK] Claude Code CLI: $ClaudeBin"
 Write-Host ""
 Write-Host "Selected model: $ClaudeModel"
 Write-Host "  (Override with: `$env:CLAUDE_MODEL='<model-id>'; .\install.ps1)"
+$modeNote = if ($ToolMode -eq "llm") { "pure model, no host tools" } else { "full Claude Code toolset on this host" }
+Write-Host "Tool mode:      $ToolMode  ($modeNote)"
+Write-Host "  (Override with: `$env:BRIDGE_TOOL_MODE='agent'; .\install.ps1)"
 Write-Host ""
 
 # -- 2. Create .env --------------------------------------------
@@ -135,6 +142,10 @@ if (Test-Path $EnvFile) {
 BRIDGE_PORT=$BridgePort
 CLAUDE_MODEL=$ClaudeModel
 CLAUDE_BIN=$ClaudeBin
+# Tool mode: llm (pure model, no host tools - safe default for shared/LAN use)
+#            or agent (full Claude Code toolset running on THIS host)
+BRIDGE_TOOL_MODE=$ToolMode
+# Permission mode below only applies in agent mode (ignored when llm)
 CLAUDE_PERMISSION_MODE=$PermissionMode
 # BRIDGE_API_KEY=   # set before exposing on a LAN (openssl rand -hex 32)
 "@

@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.4.1 — 2026-06-22
+
+### Fixed
+- **LLM mode now actually isolates all tools (security).** `--tools ""` alone only disables the
+  built-in set — the **LSP plugin tool and MCP connector tools survive it and run on the bridge
+  host**, so the previous "no host access" guarantee was false. llm mode now also passes
+  `--strict-mcp-config` and `--disallowedTools LSP`; verified against Claude Code 2.1.x that the
+  session starts with an empty tool list (`tools:[]`, `mcp_servers:[]`). Hosts with other
+  plugin-provided tools may need extra `--disallowedTools` names (`lib/config.mjs` →
+  `LLM_DISALLOWED_TOOLS`).
+
+### Changed
+- **LLM mode now isolates the working directory.** In `llm` mode (with no explicit
+  `CLAUDE_WORKING_DIR`), the bridge launches `claude` in a dedicated empty temp dir
+  (`<os-tmp>/claude-code-bridge-llm-cwd`) instead of `$HOME`, so a *project-level* `CLAUDE.md`
+  on the bridge host can no longer leak into responses. An explicit `CLAUDE_WORKING_DIR` still
+  wins. (User-level `~/.claude/CLAUDE.md` / `settings.json` are unaffected by cwd — see
+  [configuration](configuration.md#what-llm-mode-does-not-isolate).)
+- **`install.ps1` / `install.sh` now default new `.env` files to `BRIDGE_TOOL_MODE=llm`** — the
+  safe default for shared / LAN use. Set `BRIDGE_TOOL_MODE=agent` before install for a
+  single-machine full-toolset setup. The runtime default with no env stays `agent` (backward
+  compatible — existing `.env` files are untouched).
+- `start.ps1`'s startup summary box adds a `ToolMode` line (from `/health`).
+
+### Added
+- `lib/config.mjs` — new exported `resolveWorkingDirForMode()` helper (with unit tests) that
+  returns the isolated temp dir in `llm` mode and preserves `resolveWorkingDir()` behaviour in
+  `agent` mode.
+
 ## v1.4.0 — 2026-06-22
 
 ### Added

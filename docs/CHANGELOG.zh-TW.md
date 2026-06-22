@@ -2,6 +2,31 @@
 
 # Changelog
 
+## v1.4.1 — 2026-06-22
+
+### 修正
+- **LLM 模式現在真正隔離了所有工具(資安)。** 單靠 `--tools ""` 只停用內建工具集——
+  **LSP plugin 工具與 MCP connector 工具會逃過它、並在 bridge host 上執行**,所以先前「無 host
+  存取」的保證其實是假的。llm 模式現在會再帶 `--strict-mcp-config` 與 `--disallowedTools LSP`;
+  已對 Claude Code 2.1.x 驗證 session 啟動時工具清單為空(`tools:[]`、`mcp_servers:[]`)。
+  若 host 有其他 plugin 提供的工具,可能需要追加 `--disallowedTools` 名稱
+  (`lib/config.mjs` → `LLM_DISALLOWED_TOOLS`)。
+
+### 變更
+- **LLM 模式現在會隔離工作目錄。** 在 `llm` 模式下（且未明確設定 `CLAUDE_WORKING_DIR`），
+  bridge 改在一個專用的空暫存目錄（`<os-tmp>/claude-code-bridge-llm-cwd`）啟動 `claude`,
+  而非 `$HOME`,讓 bridge host 上 *project 層級* 的 `CLAUDE.md` 不再滲入回應。明確設定
+  `CLAUDE_WORKING_DIR` 仍會優先。（user 層級的 `~/.claude/CLAUDE.md` / `settings.json`
+  不受 cwd 影響——見 [configuration](configuration.zh-TW.md#llm-模式不會隔離的東西)。）
+- **`install.ps1` / `install.sh` 現在把新的 `.env` 預設為 `BRIDGE_TOOL_MODE=llm`** —— 共用 /
+  LAN 場景的安全預設。若要單機完整工具集,安裝前先設 `BRIDGE_TOOL_MODE=agent`。沒設 env 時的
+  執行期預設仍是 `agent`（向後相容——既有的 `.env` 不會被動到）。
+- `start.ps1` 的啟動摘要框新增一行 `ToolMode`(來自 `/health`)。
+
+### 新增
+- `lib/config.mjs` — 新增匯出函式 `resolveWorkingDirForMode()`（含單元測試）,在 `llm` 模式回傳
+  隔離暫存目錄,在 `agent` 模式維持 `resolveWorkingDir()` 的行為。
+
 ## v1.4.0 — 2026-06-22
 
 ### 新增

@@ -11,9 +11,9 @@ All configuration is via environment variables (or the `.env` file — the bridg
 | `BRIDGE_API_KEY` | *(empty)* | **v1.3** — optional bearer auth; when set, every endpoint except `/health` requires the key (see [api.md](api.md#bearer-auth--metrics-v13)) |
 | `CLAUDE_MODEL` | `sonnet` | Default model (alias or full ID) |
 | `CLAUDE_BIN` | `claude` | Path to the `claude` binary |
-| `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent` (all built-in tools, `--dangerously-skip-permissions`) / `llm` (no built-in tools — pure LLM behaviour; see [LLM mode](#llm-mode--remote-callers)) |
+| `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent` (all built-in tools, `--dangerously-skip-permissions`) / `llm` (no built-in tools — pure LLM behaviour; see [LLM mode](#llm-mode--remote-callers)). Runtime default with no env is `agent`; `install.ps1` / `install.sh` (v1.4.1) write `llm` into new `.env` files. |
 | `CLAUDE_PERMISSION_MODE` | `bypassPermissions` | `bypassPermissions` / `plan` / `default` — only applies in `agent` mode |
-| `CLAUDE_WORKING_DIR` | `$HOME` | Working directory for the `claude` subprocess |
+| `CLAUDE_WORKING_DIR` | `$HOME` | Working directory for the `claude` subprocess. **v1.4.1:** in `llm` mode (when unset) this defaults to an isolated empty temp dir instead of `$HOME`, so a host `CLAUDE.md` can't leak in. |
 | `BRIDGE_TIMEOUT_MS` | `300000` | Request timeout (5 min) |
 | `BRIDGE_MAX_ARG_LEN` | `32768` | Prompts longer than this are piped via stdin (avoids `E2BIG`) |
 | `BRIDGE_VERBOSE` | `true` | Log full request/response bodies and claude-cli I/O; set `false` to disable |
@@ -131,11 +131,14 @@ This is correct behaviour for single-machine use. But when the bridge is shared 
 BRIDGE_TOOL_MODE=llm
 ```
 
-The bridge then passes `--tools ""` to `claude`, disabling every built-in tool (Read, Write, Edit, Bash, WebSearch, …). Claude becomes a pure language model:
+> New installs default to this: `install.ps1` / `install.sh` (v1.4.1) write `BRIDGE_TOOL_MODE=llm` into the generated `.env`. Set `BRIDGE_TOOL_MODE=agent` before install for a single-machine, full-toolset setup.
 
-- It cannot access any file on the bridge host.
+The bridge then passes `--tools "" --strict-mcp-config --disallowedTools LSP` to `claude`. Claude becomes a pure language model:
+
+- It cannot access any file on the bridge host. `--tools ""` disables the built-in set (Read, Write, Edit, Bash, WebSearch, …); `--strict-mcp-config` and `--disallowedTools LSP` (v1.4.1) also drop the MCP connectors and the LSP plugin tool, which survive `--tools ""` alone and would otherwise run on the host. Verified: the session starts with an empty tool list.
 - If a caller asks it to "read `config.json`" without providing the content, Claude will reply asking the caller to paste the file directly into the message.
 - `CLAUDE_PERMISSION_MODE` / `--dangerously-skip-permissions` no longer applies (there are no tools to approve).
+- **v1.4.1:** the bridge also launches `claude` in an isolated empty working directory (under the OS temp dir) instead of `$HOME`, so a *project-level* `CLAUDE.md` on the host can't leak into responses. An explicit `CLAUDE_WORKING_DIR` still wins.
 
 ### How callers send file content
 
@@ -167,6 +170,52 @@ AI coding clients (Continue.dev, Cursor, etc.) do this automatically — they re
 | File access | Bridge-host filesystem | None — caller provides content |
 | `--dangerously-skip-permissions` | Yes | No |
 | Best for | Single machine | Shared / multi-machine |
+
+### Two independent "tool" mechanisms
+
+`BRIDGE_TOOL_MODE` is **not** the same thing as the OpenAI `tools[]` field in a request. They are orthogonal, and the difference is the key to using the bridge as a clean model provider:
+
+| | `BRIDGE_TOOL_MODE` (server env) | Tool Bridge Mode (per request) |
+|---|---|---|
+| Triggered by | `.env` on the server | request body contains `tools[]` |
+| What it controls | Claude's **built-in** tools (`--tools ""`) | the **caller's** function definitions |
+| Where tools run | bridge host (`agent`) / nowhere (`llm`) | **returned to the caller to run** (`finish_reason: "tool_calls"`) |
+
+Tool Bridge Mode injects the caller's tool schemas into the prompt, asks Claude to emit `<tool_call>` blocks, parses them out, and returns standard OpenAI `tool_calls`. The caller executes them **on its own machine** and sends the results back — exactly how Continue.dev / Cursor / an agent IDE drives a model.
+
+Because the two are independent, `BRIDGE_TOOL_MODE=llm` supports both calling styles:
+
+| Request | Result under `llm` |
+|---|---|
+| no `tools[]` | pure text completion — caller pastes any file content into the prompt |
+| with `tools[]` | Claude returns `tool_calls`; the **caller** executes them locally. No host-side execution, no competing built-in tools |
+
+> The combination to avoid is `agent` **with** a caller's `tools[]`: Claude is asked to emit `<tool_call>` blocks for the caller, but its own built-in tools are still live and may fire on the host instead. For client-side function calling, always use `llm`.
+
+### Running both modes at once
+
+`BRIDGE_TOOL_MODE` is process-wide. To keep full agent power for yourself **and** serve a safe LLM endpoint to the LAN, run two instances rather than adding a per-request override — the security boundary stays clean because the instance that can touch the host filesystem never leaves loopback:
+
+```bash
+# Agent instance — localhost only, full tools, never exposed
+BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=18793 BRIDGE_TOOL_MODE=agent  node claude-code-bridge.mjs
+
+# LLM instance — LAN-facing, no host filesystem access
+BRIDGE_HOST=0.0.0.0   BRIDGE_PORT=18794 BRIDGE_TOOL_MODE=llm \
+  BRIDGE_API_KEY=<key> node claude-code-bridge.mjs
+```
+
+### Recommended for agent IDEs
+
+Pointing Claude Code, OpenCode, RooCode, Continue.dev, etc. at the bridge? Those clients **are** the agent — they own the tools and the workspace on *their* machine. Set `BRIDGE_TOOL_MODE=llm` so the bridge is only the model; all tool execution then stays on the client, where it belongs.
+
+### What LLM mode does *not* isolate
+
+`--tools ""` removes the built-in tools, but `claude -p` is still a configured Claude Code process. LLM mode does **not** neutralize:
+
+- **User-level Claude Code config** — v1.4.1 already isolates the working dir, so a *project-level* `CLAUDE.md` no longer leaks. But the *user-level* `~/.claude/CLAUDE.md` and `~/.claude/settings.json` (custom system prompt, output style) are loaded regardless of cwd and still shape responses. For a fully reproducible model endpoint, run the LLM instance under a clean `HOME` / Claude Code config.
+- **The agent persona / hallucinated tools** — responses still come from Claude Code's coding-agent system prompt, so answers can be terse or coding-flavoured. Because of the user-level config above, Claude may even *claim* to have tools (e.g. "I can use Read/Bash") — but the real tool registry is empty (verified `tools:[]`), so any such call would simply not exist. It is a cosmetic confusion, not host access.
+- **Streaming of `tools[]` calls** — when a request includes `tools[]`, the response is buffered and the `tool_calls` are emitted at the end (not token-by-token), with parallel calls in a single delta and no per-call `index`. Plain (no-`tools[]`) requests stream normally.
 
 ## Logs
 

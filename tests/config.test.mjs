@@ -3,7 +3,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveWorkingDir, resolveToolMode } from "../lib/config.mjs";
+import { join } from "node:path";
+import { resolveWorkingDir, resolveToolMode, resolveWorkingDirForMode, LLM_WORKDIR_NAME, llmHardeningArgs, LLM_DISALLOWED_TOOLS } from "../lib/config.mjs";
 
 test("prefers explicit CLAUDE_WORKING_DIR over everything", () => {
   const env = { CLAUDE_WORKING_DIR: "/work", HOME: "/home", USERPROFILE: "C:\\Users\\u" };
@@ -54,4 +55,49 @@ test("resolveToolMode: unknown values fall back to agent", () => {
 
 test("resolveToolMode: agent is explicit alias", () => {
   assert.equal(resolveToolMode({ BRIDGE_TOOL_MODE: "agent" }), "agent");
+});
+
+// ── resolveWorkingDirForMode ───────────────────────────────────────
+
+test("resolveWorkingDirForMode: llm mode with no explicit dir uses isolated temp dir", () => {
+  const dir = resolveWorkingDirForMode("llm", { HOME: "/home/u" }, "/tmp", "/cwd");
+  assert.equal(dir, join("/tmp", LLM_WORKDIR_NAME));
+});
+
+test("resolveWorkingDirForMode: explicit CLAUDE_WORKING_DIR always wins, even in llm mode", () => {
+  const env = { CLAUDE_WORKING_DIR: "/work", HOME: "/home/u" };
+  assert.equal(resolveWorkingDirForMode("llm", env, "/tmp", "/cwd"), "/work");
+});
+
+test("resolveWorkingDirForMode: agent mode behaves like resolveWorkingDir (HOME default)", () => {
+  assert.equal(resolveWorkingDirForMode("agent", { HOME: "/home/u" }, "/tmp", "/cwd"), "/home/u");
+});
+
+test("resolveWorkingDirForMode: agent mode honours explicit CLAUDE_WORKING_DIR", () => {
+  const env = { CLAUDE_WORKING_DIR: "/work", HOME: "/home/u" };
+  assert.equal(resolveWorkingDirForMode("agent", env, "/tmp", "/cwd"), "/work");
+});
+
+test("resolveWorkingDirForMode: llm mode ignores empty CLAUDE_WORKING_DIR, falls to temp dir", () => {
+  const dir = resolveWorkingDirForMode("llm", { CLAUDE_WORKING_DIR: "   ", HOME: "/home/u" }, "/tmp", "/cwd");
+  assert.equal(dir, join("/tmp", LLM_WORKDIR_NAME));
+});
+
+// ── llmHardeningArgs ───────────────────────────────────────────────
+
+test("llmHardeningArgs: passes --tools '', --strict-mcp-config and denies LSP", () => {
+  assert.deepEqual(llmHardeningArgs(), ["--tools", "", "--strict-mcp-config", "--disallowedTools", "LSP"]);
+});
+
+test("llmHardeningArgs: disabling the built-in set is the first thing it does", () => {
+  const args = llmHardeningArgs();
+  assert.equal(args[0], "--tools");
+  assert.equal(args[1], ""); // "" = disable all built-in tools
+});
+
+test("llmHardeningArgs: denies every name in LLM_DISALLOWED_TOOLS", () => {
+  const args = llmHardeningArgs();
+  const i = args.indexOf("--disallowedTools");
+  assert.ok(i >= 0);
+  assert.deepEqual(args.slice(i + 1), LLM_DISALLOWED_TOOLS);
 });

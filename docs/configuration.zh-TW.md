@@ -11,9 +11,9 @@
 | `BRIDGE_API_KEY` | *(空)* | **v1.3** — 可選的 bearer auth；設定後除 `/health` 外每個 endpoint 都需要 key（見 [api.zh-TW.md](api.zh-TW.md#bearer-auth--metricsv13)） |
 | `CLAUDE_MODEL` | `sonnet` | 預設 model（alias 或完整 ID） |
 | `CLAUDE_BIN` | `claude` | `claude` binary 路徑 |
-| `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent`（所有內建工具，`--dangerously-skip-permissions`）/ `llm`（停用所有內建工具——純 LLM 行為；見 [LLM 模式](#llm-模式--遠端呼叫)） |
+| `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent`（所有內建工具，`--dangerously-skip-permissions`）/ `llm`（停用所有內建工具——純 LLM 行為；見 [LLM 模式](#llm-模式--遠端呼叫)）。沒設 env 時的執行期預設是 `agent`;`install.ps1` / `install.sh`（v1.4.1）會把 `llm` 寫進新的 `.env`。 |
 | `CLAUDE_PERMISSION_MODE` | `bypassPermissions` | `bypassPermissions` / `plan` / `default`——僅在 `agent` 模式下生效 |
-| `CLAUDE_WORKING_DIR` | `$HOME` | `claude` subprocess 的工作目錄 |
+| `CLAUDE_WORKING_DIR` | `$HOME` | `claude` subprocess 的工作目錄。**v1.4.1:** 在 `llm` 模式下（未設定時）預設為一個隔離的空暫存目錄,而非 `$HOME`,讓 host 的 `CLAUDE.md` 不會滲入。 |
 | `BRIDGE_TIMEOUT_MS` | `300000` | request timeout（5 分鐘） |
 | `BRIDGE_MAX_ARG_LEN` | `32768` | 超過此長度的 prompt 改走 stdin（避免 `E2BIG`） |
 | `BRIDGE_VERBOSE` | `true` | log 完整 request/response body 與 claude-cli I/O；設 `false` 關閉 |
@@ -131,11 +131,14 @@ claude-code-bridge 包裝的是 `claude -p`，它是一個完整的 AI **agent**
 BRIDGE_TOOL_MODE=llm
 ```
 
-bridge 就會帶 `--tools ""` 呼叫 `claude`，停用所有內建工具（Read、Write、Edit、Bash、WebSearch……）。Claude 變成純語言模型：
+> 新安裝預設就是這個:`install.ps1` / `install.sh`（v1.4.1）會把 `BRIDGE_TOOL_MODE=llm` 寫進產生的 `.env`。若要單機、完整工具集的設定,安裝前先設 `BRIDGE_TOOL_MODE=agent`。
 
-- 無法存取 bridge host 上的任何檔案。
+bridge 就會帶 `--tools "" --strict-mcp-config --disallowedTools LSP` 呼叫 `claude`。Claude 變成純語言模型：
+
+- 無法存取 bridge host 上的任何檔案。`--tools ""` 停用內建工具集（Read、Write、Edit、Bash、WebSearch……）;`--strict-mcp-config` 與 `--disallowedTools LSP`(v1.4.1)再把 MCP connector 與 LSP plugin 工具一併移除——這兩者單靠 `--tools ""` 會殘留、且會在 host 上執行。已驗證:session 啟動時工具清單為空。
 - 若呼叫端叫它「讀 `config.json`」但沒附上內容，Claude 會回覆要求對方把檔案直接貼過來。
 - `CLAUDE_PERMISSION_MODE` / `--dangerously-skip-permissions` 不再適用（沒有工具就沒有需要審核的動作）。
+- **v1.4.1:** bridge 還會把 `claude` 啟動在一個隔離的空工作目錄（OS 暫存目錄底下),而非 `$HOME`,讓 host 上 *project 層級* 的 `CLAUDE.md` 不會滲進回應。明確設定 `CLAUDE_WORKING_DIR` 仍會優先。
 
 ### 呼叫端如何傳遞檔案內容
 
@@ -167,6 +170,52 @@ Continue.dev、Cursor 等 AI 程式設計用戶端會自動做這件事——它
 | 檔案存取 | Bridge host 的檔案系統 | 無——由呼叫端提供內容 |
 | `--dangerously-skip-permissions` | 是 | 否 |
 | 適合場景 | 單機使用 | 跨主機/多人共用 |
+
+### 兩套各自獨立的「tool」機制
+
+`BRIDGE_TOOL_MODE` 和 request 裡的 OpenAI `tools[]` 欄位**不是同一件事**。兩者正交,而理解它們的差異,正是把 bridge 當成乾淨「模型供應商」的關鍵:
+
+| | `BRIDGE_TOOL_MODE`(server env) | Tool Bridge Mode(逐 request) |
+|---|---|---|
+| 觸發來源 | server 上的 `.env` | request body 帶了 `tools[]` |
+| 控制什麼 | Claude 的**內建**工具(`--tools ""`) | **呼叫端的** function 定義 |
+| 工具在哪執行 | bridge host(`agent`)/ 不執行(`llm`) | **回傳給呼叫端執行**(`finish_reason: "tool_calls"`) |
+
+Tool Bridge Mode 會把呼叫端的工具 schema 注入 prompt、要求 Claude 輸出 `<tool_call>` 區塊、解析出來,再回傳標準的 OpenAI `tool_calls`。呼叫端**在自己機器上**執行,再把結果送回來——這正是 Continue.dev / Cursor / agent IDE 驅動模型的方式。
+
+正因兩者獨立,`BRIDGE_TOOL_MODE=llm` 同時支援兩種呼叫風格:
+
+| Request | 在 `llm` 下的結果 |
+|---|---|
+| 無 `tools[]` | 純文字 completion——呼叫端自己把檔案內容貼進 prompt |
+| 有 `tools[]` | Claude 回傳 `tool_calls`,由**呼叫端**在本地執行。host 端不執行任何工具,也沒有內建工具來搶 |
+
+> 要避免的組合是 `agent` **加上**呼叫端的 `tools[]`:Claude 被要求為呼叫端輸出 `<tool_call>` 區塊,但它自己的內建工具仍然活著,可能改在 host 上觸發。要做 client-side function calling,一律用 `llm`。
+
+### 同時跑兩種模式
+
+`BRIDGE_TOOL_MODE` 是整個 process 層級的設定。若你想**自己保有完整 agent 能力**、同時**對 LAN 提供安全的 LLM 端點**,與其加 per-request 覆寫,不如跑兩個實例——安全邊界更乾淨,因為能碰到 host 檔案系統的那個實例永遠不離開 loopback:
+
+```bash
+# Agent 實例——僅限本機、完整工具、永不對外
+BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=18793 BRIDGE_TOOL_MODE=agent  node claude-code-bridge.mjs
+
+# LLM 實例——對 LAN、無 host 檔案系統存取
+BRIDGE_HOST=0.0.0.0   BRIDGE_PORT=18794 BRIDGE_TOOL_MODE=llm \
+  BRIDGE_API_KEY=<key> node claude-code-bridge.mjs
+```
+
+### Agent IDE 的建議
+
+要把 Claude Code、OpenCode、RooCode、Continue.dev 等指向 bridge?那些 client **本身就是 agent**——工具和 workspace 都在**它們自己**的機器上。設 `BRIDGE_TOOL_MODE=llm`,讓 bridge 只當模型;所有工具執行就會留在 client 端,也就是它該待的地方。
+
+### LLM 模式「不會」隔離的東西
+
+`--tools ""` 移除的是內建工具,但 `claude -p` 仍然是一個帶設定的 Claude Code process。LLM 模式**不會**中和掉:
+
+- **User 層級的 Claude Code 設定** — v1.4.1 已隔離工作目錄,所以 *project 層級* 的 `CLAUDE.md` 不再滲入。但 *user 層級* 的 `~/.claude/CLAUDE.md` 與 `~/.claude/settings.json`(自訂 system prompt、output style)不論 cwd 都會載入,仍會影響回應。要完全可重現的模型端點,用一份乾淨的 `HOME` / Claude Code 設定來跑 LLM 實例。
+- **Agent 人格 / 幻想出來的工具** — 回應仍出自 Claude Code 的 coding-agent system prompt,所以可能偏簡短、偏寫程式口吻。又因為上面那條 user 層級設定,Claude 甚至可能*聲稱*自己有工具(例如「我可以用 Read/Bash」)——但真正的工具註冊表是空的(已驗證 `tools:[]`),所以那種呼叫根本不存在。這只是表面上的混淆,不是 host 存取。
+- **`tools[]` 呼叫的串流** — 當 request 帶 `tools[]` 時,回應會被緩衝,`tool_calls` 在最後一次送出(不是逐 token),多個平行呼叫擠在同一個 delta、且沒有逐筆的 `index`。純文字(無 `tools[]`)的 request 則正常串流。
 
 ## Logs
 

@@ -1,12 +1,21 @@
 #!/usr/bin/env node
 /**
- * claude-code-bridge v1.4.0 — OpenAI + Anthropic API proxy for Claude Code CLI
+ * claude-code-bridge v1.4.1 — OpenAI + Anthropic API proxy for Claude Code CLI
  *
  * Architecture:
  *   OpenAI / Anthropic clients  ──►  claude-code-bridge (port 18793)  ──►  claude -p --output-format stream-json
  *
  * This proxy server speaks both the OpenAI and Anthropic wire formats,
  * letting any OpenAI- or Anthropic-compatible client call Claude Code CLI.
+ *
+ * v1.4.1: LLM mode hardening —
+ *   - True tool isolation: --tools "" alone still leaks LSP + MCP connector tools that run on
+ *     the host, so llm mode now also passes --strict-mcp-config + --disallowedTools LSP
+ *     (verified: empty session tool list). Nothing executes on the bridge host.
+ *   - Isolated working dir: llm mode launches claude in an empty temp dir (not $HOME) so a
+ *     project-level CLAUDE.md on the host can't leak in; an explicit CLAUDE_WORKING_DIR wins.
+ *   - install.ps1 / install.sh default new .env files to BRIDGE_TOOL_MODE=llm (safe default for
+ *     shared use). The runtime default with no env stays agent (backward compatible).
  *
  * v1.4.0: LLM mode (BRIDGE_TOOL_MODE=llm) — passes --tools "" to claude, disabling every
  *   built-in tool (Read, Write, Bash, …). Claude behaves as a pure LLM with no filesystem
@@ -65,7 +74,7 @@ import { fileURLToPath } from "node:url";
 import { anthropicToOpenAI, createAnthropicResponseAdapter } from "./lib/anthropic-compat.mjs";
 import { isAuthorized } from "./lib/auth.mjs";
 import { createMetrics, endpointLabel } from "./lib/metrics.mjs";
-import { resolveWorkingDir, resolveToolMode } from "./lib/config.mjs";
+import { resolveWorkingDirForMode, resolveToolMode, llmHardeningArgs } from "./lib/config.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -127,6 +136,9 @@ function verboseLog(tag, content) {
 }
 
 // ─── Configuration ───────────────────────────────────────────────
+// Resolve the tool mode first: it decides the working-dir default (llm mode
+// launches claude in an isolated empty temp dir so a host CLAUDE.md can't leak).
+const TOOL_MODE = resolveToolMode();
 const CONFIG = {
     port: parseInt(process.env.BRIDGE_PORT || "18793"),
     host: process.env.BRIDGE_HOST || "127.0.0.1",
@@ -138,9 +150,10 @@ const CONFIG = {
     timeoutMs: parseInt(process.env.BRIDGE_TIMEOUT_MS || "300000"), // 5 minutes
     maxArgLen: parseInt(process.env.BRIDGE_MAX_ARG_LEN || "32768"),
     charsPerToken: parseFloat(process.env.BRIDGE_CHARS_PER_TOKEN || "3.0"),
-    // HOME is absent on Windows (it uses USERPROFILE); resolveWorkingDir falls
-    // back through USERPROFILE → cwd so workingDir is never undefined.
-    workingDir: resolveWorkingDir(),
+    // HOME is absent on Windows (it uses USERPROFILE); resolveWorkingDirForMode
+    // falls back through USERPROFILE → cwd so workingDir is never undefined. In
+    // llm mode (no explicit CLAUDE_WORKING_DIR) it returns an isolated temp dir.
+    workingDir: resolveWorkingDirForMode(TOOL_MODE),
     // Verbose logging: log full request/response bodies and claude-cli I/O
     // Set BRIDGE_VERBOSE=false to disable (defaults to true)
     verbose: process.env.BRIDGE_VERBOSE !== "false",
@@ -152,8 +165,19 @@ const CONFIG = {
     // --dangerously-skip-permissions. 'llm' passes --tools "" to disable every
     // built-in tool so Claude behaves as a pure LLM — required when the bridge
     // is shared across machines (tools would otherwise run on the bridge host).
-    toolMode: resolveToolMode(),
+    toolMode: TOOL_MODE,
 };
+
+// In llm mode the working dir is a synthesized empty temp dir; make sure it
+// exists so the claude subprocess has a valid (and CLAUDE.md-free) cwd. mkdir
+// is a no-op when an explicit CLAUDE_WORKING_DIR already exists.
+if (CONFIG.toolMode === "llm") {
+    try {
+        mkdirSync(CONFIG.workingDir, { recursive: true });
+    } catch (err) {
+        console.error(`[startup] could not create llm working dir ${CONFIG.workingDir}: ${err.message}`);
+    }
+}
 
 // Hardcoded fallback: known Claude Code model aliases and full IDs
 // Aliases resolve to the latest snapshot of each family (see `claude --model`).
@@ -446,10 +470,13 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
 
     // Tool mode / permission mode
     if (CONFIG.toolMode === "llm") {
-        // Pure LLM: disable every built-in tool. No permission bypass needed
-        // since there are no tools to approve. Callers must supply file content
-        // in the prompt (same model as any cloud LLM API).
-        args.push("--tools", "");
+        // Pure LLM: disable every tool surface so NOTHING runs on the bridge host.
+        // --tools "" alone only drops the built-in set; LSP and MCP connectors
+        // survive and would execute host-side, so llmHardeningArgs() also passes
+        // --strict-mcp-config + --disallowedTools LSP (verified empty tool list).
+        // No permission bypass needed since there are no tools to approve; callers
+        // supply file content in the prompt (same model as any cloud LLM API).
+        args.push(...llmHardeningArgs());
     } else if (CONFIG.permissionMode === "bypassPermissions") {
         args.push("--dangerously-skip-permissions");
     } else if (CONFIG.permissionMode === "plan") {
@@ -805,7 +832,7 @@ const server = createServer(async (req, res) => {
             JSON.stringify({
                 status: "ok",
                 service: "claude-code-bridge",
-                version: "1.4.0",
+                version: "1.4.1",
                 model: CONFIG.claudeModel,
                 toolMode: CONFIG.toolMode,
                 permissionMode: CONFIG.permissionMode,
@@ -975,7 +1002,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
         : "none — keep bridge on localhost";
     console.log(`
 ┌──────────────────────────────────────────────────────────┐
-│              claude-code-bridge v1.4.0                    │
+│              claude-code-bridge v1.4.1                    │
 │   OpenAI + Anthropic API  →  Claude Code CLI             │
 ├──────────────────────────────────────────────────────────┤
 │  Endpoint:   http://${CONFIG.host}:${CONFIG.port}/v1/chat/completions  │
