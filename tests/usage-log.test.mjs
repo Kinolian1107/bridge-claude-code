@@ -27,3 +27,14 @@ test("formatUsageRow: quotes fields containing comma/quote/newline", () => {
 test("formatUsageRow: row has no trailing newline", () => {
   assert.ok(!formatUsageRow({ request_id: "x" }).endsWith("\n"));
 });
+
+test("has the expected 17 columns", () => {
+  assert.equal(USAGE_COLUMNS.length, 17);
+});
+
+test("formatUsageRow: 0 and false render literally, not as empty", () => {
+  const cells = formatUsageRow({ input_tokens: 0, stream: false, total_cost_usd: 0 }).split(",");
+  assert.equal(cells[USAGE_COLUMNS.indexOf("input_tokens")], "0");
+  assert.equal(cells[USAGE_COLUMNS.indexOf("stream")], "false");
+  assert.equal(cells[USAGE_COLUMNS.indexOf("total_cost_usd")], "0");
+});
