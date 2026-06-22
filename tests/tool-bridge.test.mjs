@@ -65,6 +65,18 @@ test("parseToolCalls: text mentioning tag but no valid block → near_miss", () 
   assert.ok(anomalies.some((a) => a.type === "unterminated" || a.type === "near_miss"));
 });
 
+test("parseToolCalls: code-fenced block → fenced anomaly, call still parsed", () => {
+  const { calls, anomalies } = parseToolCalls('```json\n<tool_call>{"name":"a","arguments":{"x":1}}</tool_call>\n```');
+  assert.equal(calls.length, 1);
+  assert.ok(anomalies.some((a) => a.type === "fenced"));
+});
+
+test("parseToolCalls: unterminated JSON braces inside block → unbalanced anomaly", () => {
+  const { calls, anomalies } = parseToolCalls('<tool_call>{"name":"a","arguments":{</tool_call>');
+  assert.equal(calls.length, 0);
+  assert.deepEqual(anomalies.map((a) => a.type), ["unbalanced"]);
+});
+
 test("parseToolCalls: bare-word 'tool_call' mention (no brackets) → near_miss", () => {
   const { calls, anomalies } = parseToolCalls("Sure, I will invoke the tool_call to do that.");
   assert.equal(calls.length, 0);
