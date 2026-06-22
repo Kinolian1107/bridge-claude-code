@@ -150,6 +150,12 @@ test("scanner: accumulates text across multiple pushes (multi assistant events)"
   assert.equal(calls.length, 0);
 });
 
+test("scanner: bare-word 'tool_call' with no call → near_miss on flush", () => {
+  const { calls, anomalies } = drain(createToolCallScanner(), ["I will use the tool_call later"]);
+  assert.equal(calls.length, 0);
+  assert.ok(anomalies.some((a) => a.type === "near_miss"));
+});
+
 test("scanner: unterminated block on flush → text fallback + anomaly", () => {
   const { text, calls, anomalies } = drain(createToolCallScanner(), ['oops <tool_call>{"name":"a"']);
   assert.equal(calls.length, 0);
