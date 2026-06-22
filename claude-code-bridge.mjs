@@ -375,6 +375,13 @@ function classifyError(err, stderr) {
     return { status: 500, message: msg.trim() || "Unknown Claude Code error", type: "server_error" };
 }
 
+// Log a tool-call parse anomaly. Snippet is truncated unless BRIDGE_TOOL_PARSE_LOG_FULL=1
+// (default-truncated to protect data in shared/LAN deployments).
+function logParseAnomaly(requestId, anomaly) {
+    const snip = CONFIG.toolParseLogFull ? anomaly.snippet : String(anomaly.snippet || "").slice(0, 200);
+    console.warn(`[${new Date().toISOString()}] ⚠ ParseAnomaly ${requestId.slice(-8)} type=${anomaly.type} snippet=${JSON.stringify(snip)}`);
+}
+
 // ─── Core: Run Claude Code CLI ──────────────────────────────────
 
 function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
@@ -588,6 +595,8 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                 completion_tokens: estimateTokens(totalContent),
                 total_tokens: estimateTokens(prompt) + estimateTokens(totalContent),
             };
+            // Strip internal _claude (cost/meta) before sending usage on the wire.
+            const { _claude, ...clientUsage } = usage;
 
             if (code !== 0 && !totalContent) {
                 const classified = classifyError(null, stderrOutput);
@@ -609,7 +618,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                 res.write(`data: ${JSON.stringify({
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
                     choices: [{ index: 0, delta: {}, finish_reason: finish }],
-                    usage,
+                    usage: clientUsage,
                 })}\n\n`);
                 if (callCount) metrics.recordToolCalls(callCount);
                 verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[${finish}] code=${code} | calls=${callCount} | usage=${JSON.stringify(usage)}`);
@@ -618,7 +627,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                 res.write(`data: ${JSON.stringify({
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
                     choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-                    usage,
+                    usage: clientUsage,
                 })}\n\n`);
                 verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[stop] code=${code} | chars=${totalContent.length}`);
                 console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, ${totalContent.length} chars)`);
