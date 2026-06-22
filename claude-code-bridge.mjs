@@ -377,7 +377,7 @@ function classifyError(err, stderr) {
 
 // ─── Core: Run Claude Code CLI ──────────────────────────────────
 
-function runClaudeCode(prompt, requestModel, stream, res, tools) {
+function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
     const requestId = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
     const toolBridgeMode = tools?.length > 0;
@@ -504,19 +504,41 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
         })}\n\n`);
 
         let lineBuffer = "";
-        let totalContent = "";      // streamed text (non-tool-bridge)
-        let toolBridgeBuffer = "";  // collected text (tool bridge mode — don't stream yet)
+        let totalContent = "";      // streamed text length tracking
         let usageFromResult = null;
+        const scanner = toolBridgeMode ? createToolCallScanner() : null;
+        let emittedAnyCall = false;
+        let callCount = 0;
 
+        function streamContent(text) {
+            if (!text) return;
+            res.write(`data: ${JSON.stringify({
+                id: requestId, object: "chat.completion.chunk", created, model: modelName,
+                choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+            })}\n\n`);
+        }
+        function streamToolCall(call) {
+            res.write(`data: ${JSON.stringify({
+                id: requestId, object: "chat.completion.chunk", created, model: modelName,
+                choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }],
+            })}\n\n`);
+        }
+        function logAnomalies(list) {
+            for (const a of list) {
+                metrics.recordToolParseAnomaly(a.type);
+                logParseAnomaly(requestId, a);
+            }
+        }
         function collectText(text) {
             if (toolBridgeMode) {
-                toolBridgeBuffer += text;
+                const r = scanner.push(text);
+                streamContent(r.text);
+                totalContent += r.text;
+                for (const c of r.toolCalls) { streamToolCall(c); emittedAnyCall = true; callCount++; }
+                logAnomalies(r.anomalies);
             } else {
                 totalContent += text;
-                res.write(`data: ${JSON.stringify({
-                    id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                    choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-                })}\n\n`);
+                streamContent(text);
             }
         }
 
@@ -540,11 +562,15 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
                     const text = event.delta?.text || event.content_block?.text || "";
                     if (text) collectText(text);
                 } else if (event.type === "result") {
-                    if (event.result && !totalContent && !toolBridgeBuffer) collectText(event.result);
+                    if (event.result && !totalContent) collectText(event.result);
+                    const u = event.usage || {};
+                    const inTok = u.input_tokens ?? event.input_tokens ?? estimateTokens(prompt);
+                    const outTok = u.output_tokens ?? event.output_tokens ?? estimateTokens(totalContent);
                     usageFromResult = {
-                        prompt_tokens: event.input_tokens || estimateTokens(prompt),
-                        completion_tokens: event.output_tokens || estimateTokens(toolBridgeBuffer || totalContent),
-                        total_tokens: (event.input_tokens || estimateTokens(prompt)) + (event.output_tokens || estimateTokens(toolBridgeBuffer || totalContent)),
+                        prompt_tokens: inTok,
+                        completion_tokens: outTok,
+                        total_tokens: inTok + outTok,
+                        _claude: { ...u, total_cost_usd: event.total_cost_usd, duration_ms: event.duration_ms, num_turns: event.num_turns, stop_reason: event.stop_reason },
                     };
                 } else if (event.type === "error") {
                     console.error(`  [claude-error] ${event.message || JSON.stringify(event)}`);
@@ -559,11 +585,11 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
 
             const usage = usageFromResult || {
                 prompt_tokens: estimateTokens(prompt),
-                completion_tokens: estimateTokens(toolBridgeBuffer || totalContent),
-                total_tokens: estimateTokens(prompt) + estimateTokens(toolBridgeBuffer || totalContent),
+                completion_tokens: estimateTokens(totalContent),
+                total_tokens: estimateTokens(prompt) + estimateTokens(totalContent),
             };
 
-            if (code !== 0 && !totalContent && !toolBridgeBuffer) {
+            if (code !== 0 && !totalContent) {
                 const classified = classifyError(null, stderrOutput);
                 res.write(`data: ${JSON.stringify({
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
@@ -575,37 +601,19 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
             }
 
             if (toolBridgeMode) {
-                const parsedCalls = parseToolCalls(toolBridgeBuffer);
-                if (parsedCalls.length > 0) {
-                    // Emit tool_calls chunk
-                    res.write(`data: ${JSON.stringify({
-                        id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                        choices: [{ index: 0, delta: { tool_calls: parsedCalls }, finish_reason: null }],
-                    })}\n\n`);
-                    res.write(`data: ${JSON.stringify({
-                        id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-                        usage,
-                    })}\n\n`);
-                    verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`,
-                        `[tool_calls] ${parsedCalls.map((c) => c.function.name).join(",")} | usage=${JSON.stringify(usage)}`);
-                    console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, tool_calls=${parsedCalls.map((c) => c.function.name).join(",")})`);
-                } else {
-                    // No tool calls found — emit buffered text as normal content
-                    if (toolBridgeBuffer) {
-                        res.write(`data: ${JSON.stringify({
-                            id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                            choices: [{ index: 0, delta: { content: toolBridgeBuffer }, finish_reason: null }],
-                        })}\n\n`);
-                    }
-                    res.write(`data: ${JSON.stringify({
-                        id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-                        usage,
-                    })}\n\n`);
-                    verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[stop] code=${code} | chars=${toolBridgeBuffer.length}`);
-                    console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, tool-bridge no-match, ${toolBridgeBuffer.length} chars)`);
-                }
+                const f = scanner.flush();
+                streamContent(f.text);
+                for (const c of f.toolCalls) { streamToolCall(c); emittedAnyCall = true; callCount++; }
+                logAnomalies(f.anomalies);
+                const finish = emittedAnyCall ? "tool_calls" : "stop";
+                res.write(`data: ${JSON.stringify({
+                    id: requestId, object: "chat.completion.chunk", created, model: modelName,
+                    choices: [{ index: 0, delta: {}, finish_reason: finish }],
+                    usage,
+                })}\n\n`);
+                if (callCount) metrics.recordToolCalls(callCount);
+                verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[${finish}] code=${code} | calls=${callCount} | usage=${JSON.stringify(usage)}`);
+                console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, finish=${finish}, calls=${callCount})`);
             } else {
                 res.write(`data: ${JSON.stringify({
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
