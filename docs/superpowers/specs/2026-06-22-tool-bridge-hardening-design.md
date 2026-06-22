@@ -5,6 +5,7 @@
 - 基準:v1.4.1（master `fd2d524`）
 - 修訂:2026-06-22 r2 — 經對 host 上真實 `claude -p` 跑診斷後,修正對 Claude Code 回應流程的理解,新增兩個既有 bug 修正進範圍,並定案「不加 `--include-partial-messages`」。
 - 修訂:2026-06-22 r3(Senior Review)— 用 tool-calling 協定 prompt 實跑 `claude -p`(並行 + 巢狀參數,串流/非串流各一)驗證解析邏輯。更正「assistant 事件可能多個」;新增「協定 STOP 規則 + scanner 抑制 call 後文字」以消除幻覺式結果敘述(R2)。大括號平衡、cli-output、usage、thinking guard 皆獲實測佐證。
+- 修訂:2026-06-22 r4 — 用 **harness 忠實複製端點 prompt**(messagesToPrompt + 新協定)實跑 `claude -p`:**STOP 規則證實消除追加敘述**(scanner 抑制降為保險)。新增 **Host 用量日誌(token-usage.csv)**:result 事件實測帶 `total_cost_usd`/`usage.*`,逐筆 append 記錄。
 - 語言:內部工作文件,繁體中文;技術識別字維持原文。非 `docs/` 對外 topic 文件,不做雙語鏡像。
 
 ---
@@ -24,6 +25,7 @@ bridge 已在 v1.4.1 具備 llm mode（`--tools "" --strict-mcp-config --disallo
 5. **usage 欄位修正**:讀 `…usage.input_tokens/output_tokens`(現行讀錯路徑,usage 永遠是估算值)。
 6. **thinking guard**:extended thinking 預設開啟;只有 `text` 型內容能餵進解析器,thinking 內容(模型推理,可能字面含 `tool_call`)必須排除。
 7. 解析/掃描邏輯抽成有測試的純模組(符合 CLAUDE.md「edge/policy 邏輯落 `lib/` 並有測試」)。
+8. **Host 用量日誌(`token-usage.csv`)**:每次呼叫從 result 事件擷取 tokens/cost,逐筆 append 一列(時間/來源 IP/model/tokens/cost/duration…),供 host 管理者看用量與費用;另在 `/metrics` 加聚合 token/cost 計數。
 
 ### 設計決策(經實測定案)
 - **不加 `--include-partial-messages`**。實測:現參數 `stream-json --verbose` 下,文字以**單一 `assistant` 事件整段送達**(無 token 級 delta)。加上 partial-messages 才有逐 token 串流,但會引入 `stream_event` 封套解析、`thinking_delta` 過濾、與 consolidated `assistant` 事件去重等額外脆弱面。**因延遲非考量點,維持現參數**:範圍最小、風險最低。scanner 仍保留增量介面(防禦性),實務上一次 push 收完整文字。
@@ -55,7 +57,7 @@ bridge 已在 v1.4.1 具備 llm mode（`--tools "" --strict-mcp-config --disallo
 - ✓ 參數含**巢狀物件 + 陣列**(`{"when":{"date":...,"time":...},"attendees":[...]}`)→ 舊非貪婪 regex 於第一個 `}` 截斷會**丟掉該 call** → **大括號平衡為必要**(JSON 單行,但平衡法同時相容多行)。
 - ✓ 非串流 `result.result` 含兩個 `<tool_call>`;`result.usage.input_tokens` 實測=2(prompt 長度估算會高估數百倍)→ cli-output + usage 修正必要。
 - ✓ thinking 未出現字面 `<tool_call>`(但會敘述「即將呼叫」)→ 只餵 `text` 的 guard 必要。
-- 🔴 **模型在區塊後追加幻覺式結果敘述**(「結果回來後我會整理報告」)→ 需協定加回「區塊後停止」規則 + scanner 在已吐 call 後**抑制後續區塊外文字**(見 §3.1)。
+- 🔴 **模型在區塊後追加幻覺式結果敘述**(「結果回來後我會整理報告」)→ 需協定加回「區塊後停止」規則 + scanner 在已吐 call 後**抑制後續區塊外文字**(見 §3.1)。**✅ r4 用忠實端點 prompt 實測:加入 STOP 規則後追加敘述消失,協定層已從源頭解決;scanner 抑制降為保險。**
 
 ### 現況弱點(對照上表)
 - 串流 `parseToolCalls` 用 `/<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/`(非貪婪)→ **巢狀參數在第一個 `}` 截斷** → 整個 call 被靜默丟棄。
@@ -113,7 +115,8 @@ const { text, toolCalls, anomalies } = s.flush();
 ### 3.3 metrics（`lib/metrics.mjs`)
 `createMetrics()` 新增:
 - `recordToolParseAnomaly(type)`、`recordToolCalls(n)`。
-- `render()` 增 `bridge_tool_calls_total`(counter)、`bridge_tool_parse_anomalies_total{type="..."}`(counter)。
+- `recordUsage({inputTokens, outputTokens, costUsd})`(聚合面,與逐筆 CSV 互補)。
+- `render()` 增 `bridge_tool_calls_total`、`bridge_tool_parse_anomalies_total{type="..."}`、`bridge_tokens_total{type="input|output"}`、`bridge_cost_usd_total`(皆 counter)。
 - 既有 metrics 不變。
 
 ### 3.4 server 接線（`claude-code-bridge.mjs`)
@@ -130,6 +133,18 @@ const { text, toolCalls, anomalies } = s.flush();
 - 結構化 log 預設開、有界:每筆含 timestamp、requestId 末 8 碼、type、**截斷 200 字元** snippet。
 - `BRIDGE_TOOL_PARSE_LOG_FULL=1`:輸出完整 snippet(預設關,保護共享情境下朋友的資料)。
 - 沿用既有 `console.*` / `verboseLog` 風格。
+
+### 3.6 Host 用量日誌 `lib/usage-log.mjs`(pure formatting)+ server append
+逐筆記錄每次 `claude -p` 呼叫的用量/費用,供 host 管理者看使用量、頻率、成本。資料來源:result 事件(r4 實測可取得 `usage.{input,output,cache_creation,cache_read}_tokens`、`total_cost_usd`、`duration_ms`、`num_turns`、`stop_reason`、`is_error`)。
+
+- **格式 = CSV**(管理者用 Excel/Sheets;零依賴)。
+- 純模組 `lib/usage-log.mjs`:`USAGE_CSV_HEADER` 常數、`formatUsageRow(record): string`(欄位順序固定;對含 `,` / `"` / 換行的欄位加雙引號並 `""` 跳脫)。**純函式 → 可測**。
+- server I/O:檔案不存在/空 → 先寫 header;每筆 `appendFileSync` **整列一次寫入**(避免並發交錯);路徑由 `BRIDGE_USAGE_LOG` 決定(預設 `./logs/token-usage.csv`),設 `off` 可關。
+- 欄位:`timestamp_iso, request_id, endpoint, client_ip, model, tool_mode, stream, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, total_cost_usd, duration_ms, num_turns, tool_calls, finish_reason, status`。
+- `client_ip`:`X-Forwarded-For` 首段 → `socket.remoteAddress`。
+- **隱私**:只記 metadata 與 token/cost,**絕不記 prompt/回應內容**;會記朋友來源 IP(管理者用途,需知情)。
+- 聚合面同步進 `/metrics`(§3.3 `recordUsage`)。
+- 註:cache_creation/cache_read 必留——r4 實測單次呼叫 input=2 但 cache_creation≈7400、cost≈$0.048,host 端 system-prompt overhead 才是成本主因,管理者需看得到。
 
 ---
 
@@ -176,7 +191,10 @@ const { text, toolCalls, anomalies } = s.flush();
 - 事件陣列取 result 文字+usage;前綴雜訊容忍;無 result 退 assistant;單物件相容;`is_error` 回報;全失敗保底。
 
 ### `tests/metrics.test.mjs`（增補)
-- `recordToolParseAnomaly`/`recordToolCalls` 累計;`render()` 含兩新 counter。
+- `recordToolParseAnomaly`/`recordToolCalls`/`recordUsage` 累計;`render()` 含新 counter(tool_calls、anomalies、tokens、cost)。
+
+### `tests/usage-log.test.mjs`（新)
+- `formatUsageRow`:欄位順序與 `USAGE_CSV_HEADER` 對齊;含 `,`/`"`/換行的欄位正確加引號跳脫;缺欄位補空字串;數值原樣輸出。
 
 ### 整合
 - `npm test` 全綠。
@@ -186,5 +204,6 @@ const { text, toolCalls, anomalies } = s.flush();
 
 ## 7. 版本與回退
 - 版本:擬 **v1.5.0**。header/health/banner/CHANGELOG(雙語)同步。
-- 文件:`docs/configuration*.md`(雙語)增補 `BRIDGE_TOOL_PARSE_LOG_FULL`、Tool Bridge Mode 行為與「非串流修正/usage」說明。
+- 文件:`docs/configuration*.md`(雙語)增補 `BRIDGE_TOOL_PARSE_LOG_FULL`、`BRIDGE_USAGE_LOG`、Tool Bridge Mode 行為與「非串流修正/usage/用量日誌」說明。
+- `.gitignore` 增 `logs/`(用量 CSV 為 runtime 資料,不入庫)。
 - 回退:單一 feature commit,`git revert` 即回 v1.4.1。**先 local commit,驗證通過才 push。**
