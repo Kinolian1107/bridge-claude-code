@@ -217,7 +217,7 @@ Pointing Claude Code, OpenCode, RooCode, Continue.dev, etc. at the bridge? Those
 
 - **User-level Claude Code config** — v1.4.1 already isolates the working dir, so a *project-level* `CLAUDE.md` no longer leaks. But the *user-level* `~/.claude/CLAUDE.md` and `~/.claude/settings.json` (custom system prompt, output style) are loaded regardless of cwd and still shape responses. For a fully reproducible model endpoint, run the LLM instance under a clean `HOME` / Claude Code config.
 - **The agent persona / hallucinated tools** — responses still come from Claude Code's coding-agent system prompt, so answers can be terse or coding-flavoured. Because of the user-level config above, Claude may even *claim* to have tools (e.g. "I can use Read/Bash") — but the real tool registry is empty (verified `tools:[]`), so any such call would simply not exist. It is a cosmetic confusion, not host access.
-- **Streaming of `tools[]` calls** — when a request includes `tools[]`, the response is buffered and the `tool_calls` are emitted at the end (not token-by-token), with parallel calls in a single delta and no per-call `index`. Plain (no-`tools[]`) requests stream normally.
+- **Streaming of `tools[]` calls** — when a request includes `tools[]` (v1.5), any leading text streams as content, then each `<tool_call>` is emitted as its own `tool_calls` delta the moment its block closes, with parallel calls each carrying the correct per-call `index`. Text after the first tool call is suppressed (the model is told to stop after the blocks). Plain (no-`tools[]`) requests stream normally and are unaffected.
 
 ## Per-call usage log & Tool Bridge parsing (v1.5.0)
 

@@ -217,7 +217,7 @@ BRIDGE_HOST=0.0.0.0   BRIDGE_PORT=18794 BRIDGE_TOOL_MODE=llm \
 
 - **User 層級的 Claude Code 設定** — v1.4.1 已隔離工作目錄,所以 *project 層級* 的 `CLAUDE.md` 不再滲入。但 *user 層級* 的 `~/.claude/CLAUDE.md` 與 `~/.claude/settings.json`(自訂 system prompt、output style)不論 cwd 都會載入,仍會影響回應。要完全可重現的模型端點,用一份乾淨的 `HOME` / Claude Code 設定來跑 LLM 實例。
 - **Agent 人格 / 幻想出來的工具** — 回應仍出自 Claude Code 的 coding-agent system prompt,所以可能偏簡短、偏寫程式口吻。又因為上面那條 user 層級設定,Claude 甚至可能*聲稱*自己有工具(例如「我可以用 Read/Bash」)——但真正的工具註冊表是空的(已驗證 `tools:[]`),所以那種呼叫根本不存在。這只是表面上的混淆,不是 host 存取。
-- **`tools[]` 呼叫的串流** — 當 request 帶 `tools[]` 時,回應會被緩衝,`tool_calls` 在最後一次送出(不是逐 token),多個平行呼叫擠在同一個 delta、且沒有逐筆的 `index`。純文字(無 `tools[]`)的 request 則正常串流。
+- **`tools[]` 呼叫的串流** — 當 request 帶 `tools[]`(v1.5)時,前導文字會先以 content 串流,接著每個 `<tool_call>` 在其區塊一閉合就立即以獨立的 `tool_calls` delta 送出,多個平行呼叫各自帶正確的 `index`。第一個 tool call 之後的文字會被抑制(協定要求模型在區塊後停止)。純文字(無 `tools[]`)的 request 則正常串流、不受影響。
 
 ## 逐次呼叫用量 log 與 Tool Bridge 解析（v1.5.0）
 

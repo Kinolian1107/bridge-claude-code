@@ -583,6 +583,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
         const scanner = toolBridgeMode ? createToolCallScanner() : null;
         let emittedAnyCall = false;
         let callCount = 0;
+        let sawText = false;        // any assistant/delta text seen (incl. text consumed inside a tool_call block)
 
         function streamContent(text) {
             if (!text) return;
@@ -598,6 +599,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
             })}\n\n`);
         }
         function collectText(text) {
+            if (text) sawText = true;
             if (toolBridgeMode) {
                 const r = scanner.push(text);
                 streamContent(r.text);
@@ -630,7 +632,12 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                     const text = event.delta?.text || event.content_block?.text || "";
                     if (text) collectText(text);
                 } else if (event.type === "result") {
-                    if (event.result && !totalContent) collectText(event.result);
+                    // Only use the result text as a fallback when NO assistant/delta text
+                    // arrived. In tool-bridge mode the assistant event's text is consumed
+                    // inside the scanner (leaving totalContent empty), so gating on sawText —
+                    // not totalContent — prevents re-feeding the same text and double-emitting
+                    // the tool_calls.
+                    if (event.result && !sawText) collectText(event.result);
                     const u = event.usage || {};
                     const inTok = u.input_tokens ?? event.input_tokens ?? estimateTokens(prompt);
                     const outTok = u.output_tokens ?? event.output_tokens ?? estimateTokens(totalContent);
