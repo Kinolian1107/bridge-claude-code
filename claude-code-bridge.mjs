@@ -382,6 +382,14 @@ function logParseAnomaly(requestId, anomaly) {
     console.warn(`[${new Date().toISOString()}] ⚠ ParseAnomaly ${requestId.slice(-8)} type=${anomaly.type} snippet=${JSON.stringify(snip)}`);
 }
 
+// Record + log a batch of parse anomalies (shared by the stream and non-stream paths).
+function logAnomalies(requestId, list) {
+    for (const a of list) {
+        metrics.recordToolParseAnomaly(a.type);
+        logParseAnomaly(requestId, a);
+    }
+}
+
 // ─── Core: Run Claude Code CLI ──────────────────────────────────
 
 function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
@@ -530,19 +538,13 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                 choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }],
             })}\n\n`);
         }
-        function logAnomalies(list) {
-            for (const a of list) {
-                metrics.recordToolParseAnomaly(a.type);
-                logParseAnomaly(requestId, a);
-            }
-        }
         function collectText(text) {
             if (toolBridgeMode) {
                 const r = scanner.push(text);
                 streamContent(r.text);
                 totalContent += r.text;
                 for (const c of r.toolCalls) { streamToolCall(c); emittedAnyCall = true; callCount++; }
-                logAnomalies(r.anomalies);
+                logAnomalies(requestId, r.anomalies);
             } else {
                 totalContent += text;
                 streamContent(text);
@@ -613,7 +615,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                 const f = scanner.flush();
                 streamContent(f.text);
                 for (const c of f.toolCalls) { streamToolCall(c); emittedAnyCall = true; callCount++; }
-                logAnomalies(f.anomalies);
+                logAnomalies(requestId, f.anomalies);
                 const finish = emittedAnyCall ? "tool_calls" : "stop";
                 res.write(`data: ${JSON.stringify({
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
@@ -674,7 +676,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
             // Tool Bridge Mode: check response for <tool_call> blocks
             if (toolBridgeMode) {
                 const { calls: parsedCalls, anomalies } = parseToolCalls(responseText);
-                for (const a of anomalies) { metrics.recordToolParseAnomaly(a.type); logParseAnomaly(requestId, a); }
+                logAnomalies(requestId, anomalies);
                 if (parsedCalls.length > 0) {
                     metrics.recordToolCalls(parsedCalls.length);
                     const response = {
