@@ -653,26 +653,30 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                 return;
             }
 
-            // Parse Claude Code JSON output
-            let claudeResponse;
-            try {
-                const jsonStart = stdout.indexOf("{");
-                claudeResponse = JSON.parse(jsonStart >= 0 ? stdout.slice(jsonStart) : stdout);
-            } catch {
-                claudeResponse = { result: stdout.trim() };
+            const parsedOut = parseClaudeJsonOutput(stdout);
+            if (parsedOut.isError) {
+                const classified = classifyError(null, parsedOut.text || stderrOutput);
+                console.error(`[${new Date().toISOString()}] ✗ Request ${requestId.slice(-8)}: claude result is_error → ${classified.type}`);
+                sendError(res, classified.status, classified.message, classified.type);
+                return;
             }
-
-            const responseText = claudeResponse.result || "";
+            const responseText = parsedOut.text || "";
+            const cu = parsedOut.usage || {};
+            const inTok = cu.input_tokens ?? estimateTokens(prompt);
+            const outTok = cu.output_tokens ?? estimateTokens(responseText);
             const usage = {
-                prompt_tokens: claudeResponse.input_tokens || estimateTokens(prompt),
-                completion_tokens: claudeResponse.output_tokens || estimateTokens(responseText),
-                total_tokens: (claudeResponse.input_tokens || estimateTokens(prompt)) + (claudeResponse.output_tokens || estimateTokens(responseText)),
+                prompt_tokens: inTok, completion_tokens: outTok, total_tokens: inTok + outTok,
+                _claude: { ...cu, total_cost_usd: parsedOut.costUsd, duration_ms: parsedOut.durationMs, num_turns: parsedOut.numTurns, stop_reason: parsedOut.stopReason },
             };
+            // Strip internal _claude before sending usage to the client.
+            const { _claude, ...clientUsage } = usage;
 
             // Tool Bridge Mode: check response for <tool_call> blocks
             if (toolBridgeMode) {
-                const parsedCalls = parseToolCalls(responseText);
+                const { calls: parsedCalls, anomalies } = parseToolCalls(responseText);
+                for (const a of anomalies) { metrics.recordToolParseAnomaly(a.type); logParseAnomaly(requestId, a); }
                 if (parsedCalls.length > 0) {
+                    metrics.recordToolCalls(parsedCalls.length);
                     const response = {
                         id: requestId, object: "chat.completion", created, model: modelName,
                         choices: [{
@@ -680,7 +684,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                             message: { role: "assistant", content: null, tool_calls: parsedCalls },
                             finish_reason: "tool_calls",
                         }],
-                        usage,
+                        usage: clientUsage,
                     };
                     console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (non-stream, tool_calls=${parsedCalls.map((c) => c.function.name).join(",")})`);
                     res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
@@ -693,7 +697,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
             const response = {
                 id: requestId, object: "chat.completion", created, model: modelName,
                 choices: [{ index: 0, message: { role: "assistant", content: responseText }, finish_reason: "stop" }],
-                usage,
+                usage: clientUsage,
             };
             console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (non-stream, ${responseText.length} chars, usage=${JSON.stringify(usage)})`);
             res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
