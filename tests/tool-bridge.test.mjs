@@ -150,6 +150,23 @@ test("scanner: accumulates text across multiple pushes (multi assistant events)"
   assert.equal(calls.length, 0);
 });
 
+test("scanner: open tag with internal whitespace split across chunks", () => {
+  const { calls, text } = drain(createToolCallScanner(), ["x<tool_call   ", '>{"name":"a","arguments":{}}</tool_call>']);
+  assert.equal(calls.length, 1);
+  assert.equal(text, "x");
+});
+
+test("scanner: post-call text suppressed across separate pushes (R2)", () => {
+  const { text, calls } = drain(createToolCallScanner(), ['lead <tool_call>{"name":"a","arguments":{}}</tool_call>', " trailing junk"]);
+  assert.equal(calls.length, 1);
+  assert.equal(text, "lead ");
+});
+
+test("scanner: index continuity when blocks straddle a chunk boundary", () => {
+  const { calls } = drain(createToolCallScanner(), ['<tool_call>{"name":"a","arguments":{}}</tool_call>', '<tool_call>{"name":"b","arguments":{}}</tool_call>']);
+  assert.deepEqual(calls.map((c) => c.index), [0, 1]);
+});
+
 test("scanner: bare-word 'tool_call' with no call → near_miss on flush", () => {
   const { calls, anomalies } = drain(createToolCallScanner(), ["I will use the tool_call later"]);
   assert.equal(calls.length, 0);
