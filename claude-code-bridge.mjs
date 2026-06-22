@@ -67,7 +67,7 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, writeFileSync, unlinkSync, mkdtempSync, createReadStream, rmdirSync, mkdirSync } from "node:fs";
+import { createWriteStream, writeFileSync, unlinkSync, mkdtempSync, createReadStream, rmdirSync, mkdirSync, appendFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -164,6 +164,8 @@ const CONFIG = {
     // key. Empty (default) disables auth — fine for the localhost-only threat
     // model; set BRIDGE_API_KEY before exposing the bridge on a LAN / Tailscale.
     apiKey: process.env.BRIDGE_API_KEY || "",
+    toolParseLogFull: process.env.BRIDGE_TOOL_PARSE_LOG_FULL === "1",
+    usageLogPath: process.env.BRIDGE_USAGE_LOG ?? "./logs/token-usage.csv",
     // Tool mode: 'agent' (default) enables all built-in Claude Code tools with
     // --dangerously-skip-permissions. 'llm' passes --tools "" to disable every
     // built-in tool so Claude behaves as a pure LLM — required when the bridge
@@ -390,6 +392,20 @@ function logAnomalies(requestId, list) {
     }
 }
 
+// Append one row to the per-call usage CSV (BRIDGE_USAGE_LOG; "off" disables).
+// Writes the header when the file doesn't exist yet. Never throws into the request.
+function appendUsageLog(record) {
+    if (!CONFIG.usageLogPath || CONFIG.usageLogPath.toLowerCase() === "off") return;
+    try {
+        const file = CONFIG.usageLogPath;
+        mkdirSync(dirname(file), { recursive: true });
+        if (!existsSync(file)) writeFileSync(file, USAGE_CSV_HEADER + "\n", "utf8");
+        appendFileSync(file, formatUsageRow(record) + "\n", "utf8");
+    } catch (err) {
+        console.error(`[usage-log] write failed: ${err.message}`);
+    }
+}
+
 // ─── Core: Run Claude Code CLI ──────────────────────────────────
 
 function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
@@ -404,6 +420,30 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
         if (bare) claudeModel = bare;
     }
     const modelName = `claude/${claudeModel}`;
+
+    function logUsage(usage, { toolCalls = 0, finishReason = "stop", status = 200 } = {}) {
+        const c = usage?._claude || {};
+        metrics.recordUsage({ inputTokens: usage?.prompt_tokens || 0, outputTokens: usage?.completion_tokens || 0, costUsd: c.total_cost_usd || 0 });
+        appendUsageLog({
+            timestamp_iso: new Date().toISOString(),
+            request_id: requestId.slice(-8),
+            endpoint: meta.endpoint || "",
+            client_ip: meta.clientIp || "",
+            model: claudeModel,
+            tool_mode: CONFIG.toolMode,
+            stream: String(stream),
+            input_tokens: usage?.prompt_tokens ?? "",
+            output_tokens: usage?.completion_tokens ?? "",
+            cache_creation_tokens: c.cache_creation_input_tokens ?? "",
+            cache_read_tokens: c.cache_read_input_tokens ?? "",
+            total_cost_usd: c.total_cost_usd ?? "",
+            duration_ms: c.duration_ms ?? "",
+            num_turns: c.num_turns ?? "",
+            tool_calls: toolCalls,
+            finish_reason: finishReason,
+            status,
+        });
+    }
 
     const useStdinPipe = prompt.length > CONFIG.maxArgLen;
 
@@ -606,6 +646,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
                     choices: [{ index: 0, delta: { content: `\n\n[Error: ${classified.message}]` }, finish_reason: "stop" }],
                 })}\n\n`);
+                logUsage(usage, { finishReason: "error" });
                 res.write("data: [DONE]\n\n");
                 res.end();
                 return;
@@ -623,6 +664,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                     usage: clientUsage,
                 })}\n\n`);
                 if (callCount) metrics.recordToolCalls(callCount);
+                logUsage(usage, { toolCalls: callCount, finishReason: finish });
                 verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[${finish}] code=${code} | calls=${callCount} | usage=${JSON.stringify(usage)}`);
                 console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, finish=${finish}, calls=${callCount})`);
             } else {
@@ -631,6 +673,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                     choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
                     usage: clientUsage,
                 })}\n\n`);
+                logUsage(usage, { toolCalls: 0, finishReason: "stop" });
                 verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[stop] code=${code} | chars=${totalContent.length}`);
                 console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, ${totalContent.length} chars)`);
             }
@@ -691,6 +734,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
                     console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (non-stream, tool_calls=${parsedCalls.map((c) => c.function.name).join(",")})`);
                     res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
                     verboseLog(`${requestId.slice(-8)}:RESPONSE_BODY`, response);
+                    logUsage(usage, { toolCalls: parsedCalls.length, finishReason: "tool_calls" });
                     res.end(JSON.stringify(response));
                     return;
                 }
@@ -704,6 +748,7 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
             console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (non-stream, ${responseText.length} chars, usage=${JSON.stringify(usage)})`);
             res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
             verboseLog(`${requestId.slice(-8)}:RESPONSE_BODY`, response);
+            logUsage(usage, { toolCalls: 0, finishReason: "stop" });
             res.end(JSON.stringify(response));
         });
     }
@@ -877,7 +922,8 @@ const server = createServer(async (req, res) => {
             return;
         }
 
-        runClaudeCode(prompt, data.model, stream, res, tools);
+        const clientIp = (req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || "").trim();
+        runClaudeCode(prompt, data.model, stream, res, tools, { clientIp, endpoint: "/v1/chat/completions" });
         return;
     }
 
@@ -929,7 +975,8 @@ const server = createServer(async (req, res) => {
         }
 
         const adapted = createAnthropicResponseAdapter(res, { model: data.model });
-        runClaudeCode(prompt, converted.model, stream, adapted, tools);
+        const clientIp = (req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || "").trim();
+        runClaudeCode(prompt, converted.model, stream, adapted, tools, { clientIp, endpoint: "/v1/messages" });
         return;
     }
 
