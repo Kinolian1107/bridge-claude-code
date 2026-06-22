@@ -230,7 +230,7 @@ timestamp_iso,request_id,endpoint,client_ip,model,tool_mode,stream,input_tokens,
 ```
 
 - **只記 metadata** — token 數、成本、時間與 request 形狀。prompt、回應文字、工具參數、工具結果**絕不**寫進這個檔案。
-- token 數與 `total_cost_usd` 來自 `claude` 的 result 事件的 `usage.*` / `total_cost_usd`(和 [Prometheus 指標](#)回報的是同一組數字),不是估算值。
+- token 數與 `total_cost_usd` 來自 `claude` 的 result 事件的 `usage.*` / `total_cost_usd`(和 Prometheus `/metrics` 端點回報的是同一組數字),不是估算值。
 - **每個檔案只用一個寫入 process。** bridge 是直接 append、沒有跨 process 鎖,所以若兩個 bridge 實例指向同一個路徑,它們的列可能交錯。請給每個實例各自的 `BRIDGE_USAGE_LOG` 路徑(或一個留預設、另一個指到別處)。
 
 ```bash

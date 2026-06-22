@@ -230,7 +230,7 @@ timestamp_iso,request_id,endpoint,client_ip,model,tool_mode,stream,input_tokens,
 ```
 
 - **Metadata only** — token counts, cost, timing, and request shape. The prompt, the response text, tool arguments, and tool results are **never** written to this file.
-- Token counts and `total_cost_usd` come from the `claude` result event's `usage.*` / `total_cost_usd` (the same numbers the [Prometheus metrics](#) report), not an estimate.
+- Token counts and `total_cost_usd` come from the `claude` result event's `usage.*` / `total_cost_usd` (the same numbers the Prometheus `/metrics` endpoint reports), not an estimate.
 - **One writer process per file.** The bridge appends with no inter-process locking, so if you run two bridge instances pointed at the same path their rows can interleave. Give each instance its own `BRIDGE_USAGE_LOG` path (or leave one on the default and point the other elsewhere).
 
 ```bash
