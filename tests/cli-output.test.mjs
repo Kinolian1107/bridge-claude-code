@@ -38,6 +38,22 @@ test("is_error surfaced", () => {
   assert.equal(parseClaudeJsonOutput(out).isError, true);
 });
 
+test("non-string result coerced to empty string (text contract)", () => {
+  const out = JSON.stringify([{ type: "result", result: 42, usage: {} }]);
+  assert.equal(parseClaudeJsonOutput(out).text, "");
+});
+
+test("valid array with no usable event → empty text, not raw echo", () => {
+  assert.equal(parseClaudeJsonOutput("[]").text, "");
+});
+
+test("legacy single object surfaces is_error and stop_reason", () => {
+  const out = JSON.stringify({ type: "result", result: "x", is_error: true, stop_reason: "max_tokens", usage: {} });
+  const r = parseClaudeJsonOutput(out);
+  assert.equal(r.isError, true);
+  assert.equal(r.stopReason, "max_tokens");
+});
+
 test("unparseable → safe fallback (raw text, no usage)", () => {
   const r = parseClaudeJsonOutput("not json at all");
   assert.equal(r.text, "not json at all");
