@@ -75,6 +75,9 @@ import { anthropicToOpenAI, createAnthropicResponseAdapter } from "./lib/anthrop
 import { isAuthorized } from "./lib/auth.mjs";
 import { createMetrics, endpointLabel } from "./lib/metrics.mjs";
 import { resolveWorkingDirForMode, resolveToolMode, llmHardeningArgs } from "./lib/config.mjs";
+import { buildToolProtocol, parseToolCalls, createToolCallScanner } from "./lib/tool-bridge.mjs";
+import { parseClaudeJsonOutput } from "./lib/cli-output.mjs";
+import { USAGE_CSV_HEADER, formatUsageRow } from "./lib/usage-log.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -235,70 +238,6 @@ async function fetchAvailableModels() {
     return _cachedModels;
 }
 
-// ─── Tool Bridge Mode ─────────────────────────────────────────────
-
-const TOOL_CALL_REGEX = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
-const TOOL_CALL_FENCED_REGEX = /```(?:xml|json)?\s*\n?<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>\s*\n?```/g;
-
-function toolsToPromptSection(tools) {
-    if (!tools || !tools.length) return "";
-
-    const toolDefs = tools.map((t) => {
-        const fn = t.function || t;
-        const params = fn.parameters ? JSON.stringify(fn.parameters, null, 2) : "{}";
-        return `### ${fn.name}\nDescription: ${fn.description || "(no description)"}\nParameters:\n${params}`;
-    }).join("\n\n");
-
-    return `<tool_calling_protocol>
-You have access to the following tools. When you want to call a tool, output a <tool_call> block in this EXACT format:
-
-<tool_call>
-{"name": "tool_name", "arguments": {"param1": "value1"}}
-</tool_call>
-
-Rules:
-- Output ONE <tool_call> block when invoking a tool
-- JSON inside must be valid and match the tool's parameter schema
-- After the <tool_call> block stop — do not add more text
-- If no tool is needed, respond normally without any <tool_call> block
-
-Available tools:
-${toolDefs}
-</tool_calling_protocol>`;
-}
-
-function parseToolCalls(text) {
-    const calls = [];
-    const seen = new Set();
-
-    for (const regex of [TOOL_CALL_FENCED_REGEX, TOOL_CALL_REGEX]) {
-        regex.lastIndex = 0;
-        let match;
-        while ((match = regex.exec(text)) !== null) {
-            const jsonStr = match[1].trim();
-            if (seen.has(jsonStr)) continue;
-            seen.add(jsonStr);
-            try {
-                const parsed = JSON.parse(jsonStr);
-                if (parsed.name) {
-                    calls.push({
-                        id: `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
-                        type: "function",
-                        function: {
-                            name: parsed.name,
-                            arguments: JSON.stringify(parsed.arguments ?? parsed.params ?? {}),
-                        },
-                    });
-                }
-            } catch {
-                // skip malformed JSON
-            }
-        }
-    }
-
-    return calls;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────
 
 function getContent(msg) {
@@ -321,7 +260,7 @@ function messagesToPrompt(messages, tools) {
     const parts = [];
 
     // Inject tool protocol first so it sets context before system instructions
-    const toolSection = toolsToPromptSection(tools);
+    const toolSection = buildToolProtocol(tools);
     if (toolSection) parts.push(toolSection);
 
     let hasSystem = messages.some((m) => m.role === "system");
