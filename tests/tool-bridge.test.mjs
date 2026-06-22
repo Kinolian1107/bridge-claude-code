@@ -88,3 +88,71 @@ test("parseToolCalls: plain text → no calls, no anomalies", () => {
   assert.equal(calls.length, 0);
   assert.equal(anomalies.length, 0);
 });
+
+import { createToolCallScanner } from "../lib/tool-bridge.mjs";
+
+function drain(scanner, chunks) {
+  let text = "";
+  const calls = [];
+  const anomalies = [];
+  for (const c of chunks) {
+    const r = scanner.push(c);
+    text += r.text; calls.push(...r.toolCalls); anomalies.push(...r.anomalies);
+  }
+  const f = scanner.flush();
+  text += f.text; calls.push(...f.toolCalls); anomalies.push(...f.anomalies);
+  return { text, calls, anomalies };
+}
+
+test("scanner: plain text passes through", () => {
+  const { text, calls } = drain(createToolCallScanner(), ["hello ", "world"]);
+  assert.equal(text, "hello world");
+  assert.equal(calls.length, 0);
+});
+
+test("scanner: single block in one push, leading text streamed", () => {
+  const { text, calls } = drain(createToolCallScanner(), ['Doing it.\n<tool_call>{"name":"a","arguments":{"x":1}}</tool_call>']);
+  assert.equal(text, "Doing it.\n");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].index, 0);
+  assert.equal(calls[0].function.name, "a");
+});
+
+test("scanner: open tag split across chunks", () => {
+  const { calls } = drain(createToolCallScanner(), ["pre <tool_", 'call>{"name":"a","arguments":{}}</tool_call>']);
+  assert.equal(calls.length, 1);
+});
+
+test("scanner: close tag split across chunks", () => {
+  const { calls } = drain(createToolCallScanner(), ['<tool_call>{"name":"a","arguments":{}}</tool', "_call>"]);
+  assert.equal(calls.length, 1);
+});
+
+test("scanner: two blocks in one push get indices 0 and 1", () => {
+  const { calls } = drain(createToolCallScanner(), ['<tool_call>{"name":"a","arguments":{}}</tool_call><tool_call>{"name":"b","arguments":{}}</tool_call>']);
+  assert.deepEqual(calls.map((c) => c.index), [0, 1]);
+});
+
+test("scanner: text AFTER a tool_call is suppressed (R2)", () => {
+  const { text, calls } = drain(createToolCallScanner(), ['<tool_call>{"name":"a","arguments":{}}</tool_call>\nI already did it, results coming.']);
+  assert.equal(calls.length, 1);
+  assert.equal(text, "");
+});
+
+test("scanner: nested args survive incremental scan", () => {
+  const { calls } = drain(createToolCallScanner(), ['<tool_call>{"name":"a","arguments":{"o":{"k":"v"},"arr":[1,2]}}', "</tool_call>"]);
+  assert.deepEqual(JSON.parse(calls[0].function.arguments), { o: { k: "v" }, arr: [1, 2] });
+});
+
+test("scanner: accumulates text across multiple pushes (multi assistant events)", () => {
+  const { text, calls } = drain(createToolCallScanner(), ["part one ", "part two ", "part three"]);
+  assert.equal(text, "part one part two part three");
+  assert.equal(calls.length, 0);
+});
+
+test("scanner: unterminated block on flush → text fallback + anomaly", () => {
+  const { text, calls, anomalies } = drain(createToolCallScanner(), ['oops <tool_call>{"name":"a"']);
+  assert.equal(calls.length, 0);
+  assert.match(text, /<tool_call>\{"name":"a"/);
+  assert.ok(anomalies.some((a) => a.type === "unterminated"));
+});
