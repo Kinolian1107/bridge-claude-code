@@ -85,8 +85,8 @@ test("resolveWorkingDirForMode: llm mode ignores empty CLAUDE_WORKING_DIR, falls
 
 // ── llmHardeningArgs ───────────────────────────────────────────────
 
-test("llmHardeningArgs: passes --tools '', --strict-mcp-config and denies LSP", () => {
-  assert.deepEqual(llmHardeningArgs(), ["--tools", "", "--strict-mcp-config", "--disallowedTools", "LSP"]);
+test("llmHardeningArgs: tools off, strict mcp, denies LSP, excludes setting sources", () => {
+  assert.deepEqual(llmHardeningArgs(), ["--tools", "", "--strict-mcp-config", "--disallowedTools", "LSP", "--setting-sources", ""]);
 });
 
 test("llmHardeningArgs: disabling the built-in set is the first thing it does", () => {
@@ -99,5 +99,12 @@ test("llmHardeningArgs: denies every name in LLM_DISALLOWED_TOOLS", () => {
   const args = llmHardeningArgs();
   const i = args.indexOf("--disallowedTools");
   assert.ok(i >= 0);
-  assert.deepEqual(args.slice(i + 1), LLM_DISALLOWED_TOOLS);
+  assert.deepEqual(args.slice(i + 1, i + 1 + LLM_DISALLOWED_TOOLS.length), LLM_DISALLOWED_TOOLS);
+});
+
+test("llmHardeningArgs: excludes all setting sources (no host plugins/hooks/CLAUDE.md)", () => {
+  const args = llmHardeningArgs();
+  const i = args.indexOf("--setting-sources");
+  assert.ok(i >= 0);
+  assert.equal(args[i + 1], ""); // "" = load no user/project/local settings; OAuth auth still works
 });
