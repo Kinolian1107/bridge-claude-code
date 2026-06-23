@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { resolveWorkingDir, resolveToolMode, resolveWorkingDirForMode, LLM_WORKDIR_NAME, llmHardeningArgs, LLM_DISALLOWED_TOOLS } from "../lib/config.mjs";
+import { resolveWorkingDir, resolveToolMode, resolveWorkingDirForMode, LLM_WORKDIR_NAME, llmHardeningArgs, LLM_DISALLOWED_TOOLS, resolveModel, isClaudeModel } from "../lib/config.mjs";
 
 test("prefers explicit CLAUDE_WORKING_DIR over everything", () => {
   const env = { CLAUDE_WORKING_DIR: "/work", HOME: "/home", USERPROFILE: "C:\\Users\\u" };
@@ -107,4 +107,54 @@ test("llmHardeningArgs: excludes all setting sources (no host plugins/hooks/CLAU
   const i = args.indexOf("--setting-sources");
   assert.ok(i >= 0);
   assert.equal(args[i + 1], ""); // "" = load no user/project/local settings; OAuth auth still works
+});
+
+// ── isClaudeModel ──────────────────────────────────────────────────
+
+test("isClaudeModel: accepts aliases and full claude- ids, rejects others", () => {
+  assert.ok(isClaudeModel("sonnet"));
+  assert.ok(isClaudeModel("OPUS"));
+  assert.ok(isClaudeModel("claude-opus-4-8"));
+  assert.ok(isClaudeModel("claude-3-5-sonnet-20241022"));
+  assert.ok(!isClaudeModel("gpt-4o"));
+  assert.ok(!isClaudeModel("gemini-1.5-pro"));
+  assert.ok(!isClaudeModel(""));
+  assert.ok(!isClaudeModel(undefined));
+  assert.ok(!isClaudeModel("claude")); // bare "claude" is not a real model id
+});
+
+// ── resolveModel ───────────────────────────────────────────────────
+
+test("resolveModel: missing/blank request model → host default", () => {
+  assert.equal(resolveModel(undefined, { defaultModel: "sonnet" }), "sonnet");
+  assert.equal(resolveModel("", { defaultModel: "sonnet" }), "sonnet");
+  assert.equal(resolveModel("   ", { defaultModel: "sonnet" }), "sonnet");
+});
+
+test("resolveModel: a valid Claude model from the client wins over the default", () => {
+  assert.equal(resolveModel("claude-opus-4-8", { defaultModel: "sonnet" }), "claude-opus-4-8");
+  assert.equal(resolveModel("opus", { defaultModel: "sonnet" }), "opus");
+});
+
+test("resolveModel: strips routing/provider prefixes", () => {
+  assert.equal(resolveModel("claude/opus", { defaultModel: "sonnet" }), "opus");
+  assert.equal(resolveModel("bridge-claude-code/sonnet", { defaultModel: "opus" }), "sonnet");
+  assert.equal(resolveModel("anthropic/claude-3-5-sonnet-20241022", { defaultModel: "sonnet" }), "claude-3-5-sonnet-20241022");
+});
+
+test("resolveModel: non-Claude / unknown model falls back to the default (no claude --model error)", () => {
+  assert.equal(resolveModel("gpt-4o", { defaultModel: "sonnet" }), "sonnet");
+  assert.equal(resolveModel("openai/gpt-4", { defaultModel: "sonnet" }), "sonnet");
+  assert.equal(resolveModel("gemini-1.5-pro", { defaultModel: "haiku" }), "haiku");
+});
+
+test("resolveModel: forceModel overrides everything (cost-control pin)", () => {
+  assert.equal(resolveModel("claude-opus-4-8", { defaultModel: "sonnet", forceModel: "sonnet" }), "sonnet");
+  assert.equal(resolveModel("gpt-4o", { defaultModel: "opus", forceModel: "haiku" }), "haiku");
+  assert.equal(resolveModel(undefined, { defaultModel: "opus", forceModel: "sonnet" }), "sonnet");
+});
+
+test("resolveModel: empty/whitespace forceModel is treated as OFF (falls through to normal precedence)", () => {
+  assert.equal(resolveModel("opus", { defaultModel: "sonnet", forceModel: "" }), "opus");
+  assert.equal(resolveModel("opus", { defaultModel: "sonnet", forceModel: "   " }), "opus");
 });

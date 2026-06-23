@@ -93,7 +93,7 @@ import { fileURLToPath } from "node:url";
 import { anthropicToOpenAI, createAnthropicResponseAdapter } from "./lib/anthropic-compat.mjs";
 import { isAuthorized } from "./lib/auth.mjs";
 import { createMetrics, endpointLabel } from "./lib/metrics.mjs";
-import { resolveWorkingDirForMode, resolveToolMode, llmHardeningArgs } from "./lib/config.mjs";
+import { resolveWorkingDirForMode, resolveToolMode, llmHardeningArgs, resolveModel } from "./lib/config.mjs";
 import { buildToolProtocol, parseToolCalls, createToolCallScanner } from "./lib/tool-bridge.mjs";
 import { parseClaudeJsonOutput } from "./lib/cli-output.mjs";
 import { USAGE_CSV_HEADER, formatUsageRow } from "./lib/usage-log.mjs";
@@ -165,6 +165,9 @@ const CONFIG = {
     port: parseInt(process.env.BRIDGE_PORT || "18793"),
     host: process.env.BRIDGE_HOST || "127.0.0.1",
     claudeModel: process.env.CLAUDE_MODEL || "sonnet",
+    // BRIDGE_FORCE_MODEL: when set, ALWAYS use this model and ignore the client's
+    // requested model (host-side cost control / model pinning). Empty = off.
+    forceModel: process.env.BRIDGE_FORCE_MODEL || "",
     claudeBin: process.env.CLAUDE_BIN || "claude",
     // Permission mode: 'default', 'plan', 'bypassPermissions'
     // 'bypassPermissions' = skip all permission checks (default for bridge mode)
@@ -432,12 +435,10 @@ function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
     const created = Math.floor(Date.now() / 1000);
     const toolBridgeMode = tools?.length > 0;
 
-    // Support dynamic model switching
-    let claudeModel = CONFIG.claudeModel;
-    if (requestModel) {
-        const bare = requestModel.replace(/^(?:bridge-claude-code|claude)\//, "");
-        if (bare) claudeModel = bare;
-    }
+    // Resolve the model: BRIDGE_FORCE_MODEL pins it (cost control); otherwise the
+    // client's model wins if it's a real Claude model, else fall back to the
+    // host default (so a non-Claude name from another IDE doesn't error claude).
+    const claudeModel = resolveModel(requestModel, { defaultModel: CONFIG.claudeModel, forceModel: CONFIG.forceModel });
     const modelName = `claude/${claudeModel}`;
 
     function logUsage(usage, { toolCalls = 0, finishReason = "stop", status = 200 } = {}) {
