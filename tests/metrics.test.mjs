@@ -55,3 +55,19 @@ test("renders valid TYPE/HELP headers even with no traffic", () => {
   assert.ok(out.includes("# TYPE bridge_uptime_seconds gauge"));
   assert.ok(out.endsWith("\n"));
 });
+
+test("tool-call, anomaly, and usage counters render", () => {
+  const m = createMetrics();
+  m.recordToolCalls(2);
+  m.recordToolParseAnomaly("invalid_json");
+  m.recordToolParseAnomaly("invalid_json");
+  m.recordToolParseAnomaly("near_miss");
+  m.recordUsage({ inputTokens: 2, outputTokens: 215, costUsd: 0.0484 });
+  const out = m.render();
+  assert.match(out, /bridge_tool_calls_total 2/);
+  assert.match(out, /bridge_tool_parse_anomalies_total\{type="invalid_json"\} 2/);
+  assert.match(out, /bridge_tool_parse_anomalies_total\{type="near_miss"\} 1/);
+  assert.match(out, /bridge_tokens_total\{type="input"\} 2/);
+  assert.match(out, /bridge_tokens_total\{type="output"\} 215/);
+  assert.match(out, /bridge_cost_usd_total 0.0484/);
+});

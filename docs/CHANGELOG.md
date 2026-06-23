@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.5.0 — 2026-06-23
+
+### Fixed
+- **Non-stream (`--output-format json`) responses now parse correctly.** Claude Code 2.1.x returns
+  a JSON **array** of events; the old parser assumed a single object, so it dumped the raw JSON as
+  the message content. Parsing now lives in the pure `lib/cli-output.mjs` module, which finds the
+  `result` event and extracts the assistant text. Token usage is read from that event's `usage.*` /
+  `total_cost_usd` instead of a character-count estimate.
+
+### Added
+- **Tool Bridge Mode hardening** (`lib/tool-bridge.mjs`):
+  - **Brace-balanced `<tool_call>` parsing** — nested-object / array arguments are no longer
+    truncated and silently dropped.
+  - **Parallel tool calls** — multiple `<tool_call>` blocks in one turn are returned together with
+    the correct `index` per call.
+  - **Protocol STOP rule** — the model is instructed to stop after emitting the `<tool_call>`
+    blocks, so it no longer hallucinates "results" for calls the caller hasn't run yet.
+  - **Incremental streaming** of text + `tool_calls` via a scanner (no longer buffer-and-flush only).
+- **Observability** — tool-call parse anomalies are counted in `/metrics`
+  (`bridge_tool_parse_anomalies_total{type}`) and logged (truncated by default; set
+  `BRIDGE_TOOL_PARSE_LOG_FULL=1` for full snippets). New metrics `bridge_tool_calls_total`,
+  `bridge_tokens_total{type}`, and `bridge_cost_usd_total`.
+- **Per-call usage CSV** (`BRIDGE_USAGE_LOG`, default `./logs/token-usage.csv`, `off` to disable) —
+  appends one row per request: timestamp, source IP, model, tool mode, stream, input/output/cache
+  tokens, `total_cost_usd`, duration, num turns, tool calls, finish reason, status. Lets a
+  shared-host admin track usage and cost. **Metadata only — never request/response content.** Use
+  one writer process per file. See [configuration](configuration.md#per-call-usage-log--tool-bridge-parsing-v150).
+- **LLM-mode host isolation** (`--setting-sources ""`, `lib/config.mjs`) — `llm` mode now loads
+  **none** of the host's user/project/local Claude Code settings, so its plugins, **SessionStart
+  hooks**, and *user-level* `~/.claude/CLAUDE.md` no longer inject into responses (a connected client
+  had observed the host's superpowers SessionStart hook bleeding into replies — verified the hook
+  fired 6× by default, 0× with the flag). OAuth subscription auth is unaffected. Closes the
+  user-level-config leak that v1.4.1 could only partially mitigate (project-level `CLAUDE.md`).
+- **Robust model resolution + `BRIDGE_FORCE_MODEL`** (`lib/config.mjs` → `resolveModel`). A client's
+  requested model is honoured only if it is a Claude model (alias or `claude-…` id, after stripping
+  `bridge-claude-code/` / `claude/` / `anthropic/` prefixes); a non-Claude name from another IDE
+  (Roo Code / Cline / OpenCode sending e.g. `gpt-4o`), or a missing/blank model, now **falls back to
+  `CLAUDE_MODEL`** instead of erroring `claude --model gpt-4o`. New `BRIDGE_FORCE_MODEL` (empty = off)
+  pins the model host-side regardless of the client — for cost control on a shared host. See
+  [configuration](configuration.md#model-selection--forcing-v15).
+- **Windows client launcher** (`remote-setup/connect-claude.ps1`) — one command points a Windows
+  client's Claude Code at a remote bridge: health check, `ANTHROPIC_BASE_URL` + auth, the
+  `api.anthropic.com` onboarding workaround, then launches `claude` in the current directory. See
+  [integrations](integrations.md#windows-one-command-launcher-connect-claudeps1).
+
+### Changed
+- **Internal** — extracted pure, unit-tested modules `lib/tool-bridge.mjs`, `lib/cli-output.mjs`,
+  and `lib/usage-log.mjs`. Backward compatible: no behaviour change for plain chat or the existing
+  `agent` / `llm` modes, and the streaming no-tools path is byte-identical.
+
 ## v1.4.1 — 2026-06-22
 
 ### Fixed

@@ -1,12 +1,31 @@
 #!/usr/bin/env node
 /**
- * claude-code-bridge v1.4.1 — OpenAI + Anthropic API proxy for Claude Code CLI
+ * claude-code-bridge v1.5.0 — OpenAI + Anthropic API proxy for Claude Code CLI
  *
  * Architecture:
  *   OpenAI / Anthropic clients  ──►  claude-code-bridge (port 18793)  ──►  claude -p --output-format stream-json
  *
  * This proxy server speaks both the OpenAI and Anthropic wire formats,
  * letting any OpenAI- or Anthropic-compatible client call Claude Code CLI.
+ *
+ * v1.5.0: Tool Bridge Mode hardening + non-stream parser fix + usage observability —
+ *   - Fixed non-stream (--output-format json) parsing: Claude Code 2.1.x returns a JSON
+ *     *array* of events; the old parser assumed a single object and dumped raw JSON as the
+ *     message. Now parsed correctly (lib/cli-output.mjs); token usage read from the result
+ *     event's usage.* / total_cost_usd instead of a character estimate.
+ *   - Tool Bridge: brace-balanced <tool_call> parsing (nested-object/array arguments no longer
+ *     truncated), parallel tool calls (multiple blocks per turn, correct index), a protocol
+ *     STOP rule (no hallucinated "results" after the blocks), and incremental streaming of
+ *     text + tool_calls via a scanner.
+ *   - Observability: tool-call parse anomalies counted in /metrics
+ *     (bridge_tool_parse_anomalies_total{type}) and logged (truncated; BRIDGE_TOOL_PARSE_LOG_FULL=1
+ *     for full snippets). New metrics bridge_tool_calls_total, bridge_tokens_total{type},
+ *     bridge_cost_usd_total.
+ *   - Per-call usage CSV: BRIDGE_USAGE_LOG (default ./logs/token-usage.csv, 'off' to disable)
+ *     appends one metadata-only row per request so a shared-host admin can track usage and cost.
+ *   - Internal: extracted pure, unit-tested lib/tool-bridge.mjs, lib/cli-output.mjs,
+ *     lib/usage-log.mjs; backward compatible (plain chat / agent / llm unchanged; the streaming
+ *     no-tools path is byte-identical).
  *
  * v1.4.1: LLM mode hardening —
  *   - True tool isolation: --tools "" alone still leaks LSP + MCP connector tools that run on
@@ -67,14 +86,17 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, writeFileSync, unlinkSync, mkdtempSync, createReadStream, rmdirSync, mkdirSync } from "node:fs";
+import { createWriteStream, writeFileSync, unlinkSync, mkdtempSync, createReadStream, rmdirSync, mkdirSync, appendFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { anthropicToOpenAI, createAnthropicResponseAdapter } from "./lib/anthropic-compat.mjs";
 import { isAuthorized } from "./lib/auth.mjs";
 import { createMetrics, endpointLabel } from "./lib/metrics.mjs";
-import { resolveWorkingDirForMode, resolveToolMode, llmHardeningArgs } from "./lib/config.mjs";
+import { resolveWorkingDirForMode, resolveToolMode, llmHardeningArgs, resolveModel } from "./lib/config.mjs";
+import { buildToolProtocol, parseToolCalls, createToolCallScanner } from "./lib/tool-bridge.mjs";
+import { parseClaudeJsonOutput } from "./lib/cli-output.mjs";
+import { USAGE_CSV_HEADER, formatUsageRow } from "./lib/usage-log.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -143,6 +165,9 @@ const CONFIG = {
     port: parseInt(process.env.BRIDGE_PORT || "18793"),
     host: process.env.BRIDGE_HOST || "127.0.0.1",
     claudeModel: process.env.CLAUDE_MODEL || "sonnet",
+    // BRIDGE_FORCE_MODEL: when set, ALWAYS use this model and ignore the client's
+    // requested model (host-side cost control / model pinning). Empty = off.
+    forceModel: process.env.BRIDGE_FORCE_MODEL || "",
     claudeBin: process.env.CLAUDE_BIN || "claude",
     // Permission mode: 'default', 'plan', 'bypassPermissions'
     // 'bypassPermissions' = skip all permission checks (default for bridge mode)
@@ -161,6 +186,8 @@ const CONFIG = {
     // key. Empty (default) disables auth — fine for the localhost-only threat
     // model; set BRIDGE_API_KEY before exposing the bridge on a LAN / Tailscale.
     apiKey: process.env.BRIDGE_API_KEY || "",
+    toolParseLogFull: process.env.BRIDGE_TOOL_PARSE_LOG_FULL === "1",
+    usageLogPath: process.env.BRIDGE_USAGE_LOG ?? "./logs/token-usage.csv",
     // Tool mode: 'agent' (default) enables all built-in Claude Code tools with
     // --dangerously-skip-permissions. 'llm' passes --tools "" to disable every
     // built-in tool so Claude behaves as a pure LLM — required when the bridge
@@ -235,70 +262,6 @@ async function fetchAvailableModels() {
     return _cachedModels;
 }
 
-// ─── Tool Bridge Mode ─────────────────────────────────────────────
-
-const TOOL_CALL_REGEX = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
-const TOOL_CALL_FENCED_REGEX = /```(?:xml|json)?\s*\n?<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>\s*\n?```/g;
-
-function toolsToPromptSection(tools) {
-    if (!tools || !tools.length) return "";
-
-    const toolDefs = tools.map((t) => {
-        const fn = t.function || t;
-        const params = fn.parameters ? JSON.stringify(fn.parameters, null, 2) : "{}";
-        return `### ${fn.name}\nDescription: ${fn.description || "(no description)"}\nParameters:\n${params}`;
-    }).join("\n\n");
-
-    return `<tool_calling_protocol>
-You have access to the following tools. When you want to call a tool, output a <tool_call> block in this EXACT format:
-
-<tool_call>
-{"name": "tool_name", "arguments": {"param1": "value1"}}
-</tool_call>
-
-Rules:
-- Output ONE <tool_call> block when invoking a tool
-- JSON inside must be valid and match the tool's parameter schema
-- After the <tool_call> block stop — do not add more text
-- If no tool is needed, respond normally without any <tool_call> block
-
-Available tools:
-${toolDefs}
-</tool_calling_protocol>`;
-}
-
-function parseToolCalls(text) {
-    const calls = [];
-    const seen = new Set();
-
-    for (const regex of [TOOL_CALL_FENCED_REGEX, TOOL_CALL_REGEX]) {
-        regex.lastIndex = 0;
-        let match;
-        while ((match = regex.exec(text)) !== null) {
-            const jsonStr = match[1].trim();
-            if (seen.has(jsonStr)) continue;
-            seen.add(jsonStr);
-            try {
-                const parsed = JSON.parse(jsonStr);
-                if (parsed.name) {
-                    calls.push({
-                        id: `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
-                        type: "function",
-                        function: {
-                            name: parsed.name,
-                            arguments: JSON.stringify(parsed.arguments ?? parsed.params ?? {}),
-                        },
-                    });
-                }
-            } catch {
-                // skip malformed JSON
-            }
-        }
-    }
-
-    return calls;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────
 
 function getContent(msg) {
@@ -321,7 +284,7 @@ function messagesToPrompt(messages, tools) {
     const parts = [];
 
     // Inject tool protocol first so it sets context before system instructions
-    const toolSection = toolsToPromptSection(tools);
+    const toolSection = buildToolProtocol(tools);
     if (toolSection) parts.push(toolSection);
 
     let hasSystem = messages.some((m) => m.role === "system");
@@ -436,20 +399,71 @@ function classifyError(err, stderr) {
     return { status: 500, message: msg.trim() || "Unknown Claude Code error", type: "server_error" };
 }
 
+// Log a tool-call parse anomaly. Snippet is truncated unless BRIDGE_TOOL_PARSE_LOG_FULL=1
+// (default-truncated to protect data in shared/LAN deployments).
+function logParseAnomaly(requestId, anomaly) {
+    const snip = CONFIG.toolParseLogFull ? anomaly.snippet : String(anomaly.snippet || "").slice(0, 200);
+    console.warn(`[${new Date().toISOString()}] ⚠ ParseAnomaly ${requestId.slice(-8)} type=${anomaly.type} snippet=${JSON.stringify(snip)}`);
+}
+
+// Record + log a batch of parse anomalies (shared by the stream and non-stream paths).
+function logAnomalies(requestId, list) {
+    for (const a of list) {
+        metrics.recordToolParseAnomaly(a.type);
+        logParseAnomaly(requestId, a);
+    }
+}
+
+// Append one row to the per-call usage CSV (BRIDGE_USAGE_LOG; "off" disables).
+// Writes the header when the file doesn't exist yet. Never throws into the request.
+function appendUsageLog(record) {
+    if (!CONFIG.usageLogPath || CONFIG.usageLogPath.toLowerCase() === "off") return;
+    try {
+        const file = CONFIG.usageLogPath;
+        mkdirSync(dirname(file), { recursive: true });
+        if (!existsSync(file)) writeFileSync(file, USAGE_CSV_HEADER + "\n", "utf8");
+        appendFileSync(file, formatUsageRow(record) + "\n", "utf8");
+    } catch (err) {
+        console.error(`[usage-log] write failed: ${err.message}`);
+    }
+}
+
 // ─── Core: Run Claude Code CLI ──────────────────────────────────
 
-function runClaudeCode(prompt, requestModel, stream, res, tools) {
+function runClaudeCode(prompt, requestModel, stream, res, tools, meta = {}) {
     const requestId = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
     const toolBridgeMode = tools?.length > 0;
 
-    // Support dynamic model switching
-    let claudeModel = CONFIG.claudeModel;
-    if (requestModel) {
-        const bare = requestModel.replace(/^(?:bridge-claude-code|claude)\//, "");
-        if (bare) claudeModel = bare;
-    }
+    // Resolve the model: BRIDGE_FORCE_MODEL pins it (cost control); otherwise the
+    // client's model wins if it's a real Claude model, else fall back to the
+    // host default (so a non-Claude name from another IDE doesn't error claude).
+    const claudeModel = resolveModel(requestModel, { defaultModel: CONFIG.claudeModel, forceModel: CONFIG.forceModel });
     const modelName = `claude/${claudeModel}`;
+
+    function logUsage(usage, { toolCalls = 0, finishReason = "stop", status = 200 } = {}) {
+        const c = usage?._claude || {};
+        metrics.recordUsage({ inputTokens: usage?.prompt_tokens || 0, outputTokens: usage?.completion_tokens || 0, costUsd: c.total_cost_usd || 0 });
+        appendUsageLog({
+            timestamp_iso: new Date().toISOString(),
+            request_id: requestId.slice(-8),
+            endpoint: meta.endpoint || "",
+            client_ip: meta.clientIp || "",
+            model: claudeModel,
+            tool_mode: CONFIG.toolMode,
+            stream: String(stream),
+            input_tokens: usage?.prompt_tokens ?? "",
+            output_tokens: usage?.completion_tokens ?? "",
+            cache_creation_tokens: c.cache_creation_input_tokens ?? "",
+            cache_read_tokens: c.cache_read_input_tokens ?? "",
+            total_cost_usd: c.total_cost_usd ?? "",
+            duration_ms: c.duration_ms ?? "",
+            num_turns: c.num_turns ?? "",
+            tool_calls: toolCalls,
+            finish_reason: finishReason,
+            status,
+        });
+    }
 
     const useStdinPipe = prompt.length > CONFIG.maxArgLen;
 
@@ -565,19 +579,37 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
         })}\n\n`);
 
         let lineBuffer = "";
-        let totalContent = "";      // streamed text (non-tool-bridge)
-        let toolBridgeBuffer = "";  // collected text (tool bridge mode — don't stream yet)
+        let totalContent = "";      // streamed text length tracking
         let usageFromResult = null;
+        const scanner = toolBridgeMode ? createToolCallScanner() : null;
+        let emittedAnyCall = false;
+        let callCount = 0;
+        let sawText = false;        // any assistant/delta text seen (incl. text consumed inside a tool_call block)
 
+        function streamContent(text) {
+            if (!text) return;
+            res.write(`data: ${JSON.stringify({
+                id: requestId, object: "chat.completion.chunk", created, model: modelName,
+                choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+            })}\n\n`);
+        }
+        function streamToolCall(call) {
+            res.write(`data: ${JSON.stringify({
+                id: requestId, object: "chat.completion.chunk", created, model: modelName,
+                choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }],
+            })}\n\n`);
+        }
         function collectText(text) {
+            if (text) sawText = true;
             if (toolBridgeMode) {
-                toolBridgeBuffer += text;
+                const r = scanner.push(text);
+                streamContent(r.text);
+                totalContent += r.text;
+                for (const c of r.toolCalls) { streamToolCall(c); emittedAnyCall = true; callCount++; }
+                logAnomalies(requestId, r.anomalies);
             } else {
                 totalContent += text;
-                res.write(`data: ${JSON.stringify({
-                    id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                    choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-                })}\n\n`);
+                streamContent(text);
             }
         }
 
@@ -601,11 +633,20 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
                     const text = event.delta?.text || event.content_block?.text || "";
                     if (text) collectText(text);
                 } else if (event.type === "result") {
-                    if (event.result && !totalContent && !toolBridgeBuffer) collectText(event.result);
+                    // Only use the result text as a fallback when NO assistant/delta text
+                    // arrived. In tool-bridge mode the assistant event's text is consumed
+                    // inside the scanner (leaving totalContent empty), so gating on sawText —
+                    // not totalContent — prevents re-feeding the same text and double-emitting
+                    // the tool_calls.
+                    if (event.result && !sawText) collectText(event.result);
+                    const u = event.usage || {};
+                    const inTok = u.input_tokens ?? event.input_tokens ?? estimateTokens(prompt);
+                    const outTok = u.output_tokens ?? event.output_tokens ?? estimateTokens(totalContent);
                     usageFromResult = {
-                        prompt_tokens: event.input_tokens || estimateTokens(prompt),
-                        completion_tokens: event.output_tokens || estimateTokens(toolBridgeBuffer || totalContent),
-                        total_tokens: (event.input_tokens || estimateTokens(prompt)) + (event.output_tokens || estimateTokens(toolBridgeBuffer || totalContent)),
+                        prompt_tokens: inTok,
+                        completion_tokens: outTok,
+                        total_tokens: inTok + outTok,
+                        _claude: { ...u, total_cost_usd: event.total_cost_usd, duration_ms: event.duration_ms, num_turns: event.num_turns, stop_reason: event.stop_reason },
                     };
                 } else if (event.type === "error") {
                     console.error(`  [claude-error] ${event.message || JSON.stringify(event)}`);
@@ -620,59 +661,46 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
 
             const usage = usageFromResult || {
                 prompt_tokens: estimateTokens(prompt),
-                completion_tokens: estimateTokens(toolBridgeBuffer || totalContent),
-                total_tokens: estimateTokens(prompt) + estimateTokens(toolBridgeBuffer || totalContent),
+                completion_tokens: estimateTokens(totalContent),
+                total_tokens: estimateTokens(prompt) + estimateTokens(totalContent),
             };
+            // Strip internal _claude (cost/meta) before sending usage on the wire.
+            const { _claude, ...clientUsage } = usage;
 
-            if (code !== 0 && !totalContent && !toolBridgeBuffer) {
+            if (code !== 0 && !totalContent) {
                 const classified = classifyError(null, stderrOutput);
                 res.write(`data: ${JSON.stringify({
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
                     choices: [{ index: 0, delta: { content: `\n\n[Error: ${classified.message}]` }, finish_reason: "stop" }],
                 })}\n\n`);
+                logUsage(usage, { finishReason: "error" });
                 res.write("data: [DONE]\n\n");
                 res.end();
                 return;
             }
 
             if (toolBridgeMode) {
-                const parsedCalls = parseToolCalls(toolBridgeBuffer);
-                if (parsedCalls.length > 0) {
-                    // Emit tool_calls chunk
-                    res.write(`data: ${JSON.stringify({
-                        id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                        choices: [{ index: 0, delta: { tool_calls: parsedCalls }, finish_reason: null }],
-                    })}\n\n`);
-                    res.write(`data: ${JSON.stringify({
-                        id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-                        usage,
-                    })}\n\n`);
-                    verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`,
-                        `[tool_calls] ${parsedCalls.map((c) => c.function.name).join(",")} | usage=${JSON.stringify(usage)}`);
-                    console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, tool_calls=${parsedCalls.map((c) => c.function.name).join(",")})`);
-                } else {
-                    // No tool calls found — emit buffered text as normal content
-                    if (toolBridgeBuffer) {
-                        res.write(`data: ${JSON.stringify({
-                            id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                            choices: [{ index: 0, delta: { content: toolBridgeBuffer }, finish_reason: null }],
-                        })}\n\n`);
-                    }
-                    res.write(`data: ${JSON.stringify({
-                        id: requestId, object: "chat.completion.chunk", created, model: modelName,
-                        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-                        usage,
-                    })}\n\n`);
-                    verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[stop] code=${code} | chars=${toolBridgeBuffer.length}`);
-                    console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, tool-bridge no-match, ${toolBridgeBuffer.length} chars)`);
-                }
+                const f = scanner.flush();
+                streamContent(f.text);
+                for (const c of f.toolCalls) { streamToolCall(c); emittedAnyCall = true; callCount++; }
+                logAnomalies(requestId, f.anomalies);
+                const finish = emittedAnyCall ? "tool_calls" : "stop";
+                res.write(`data: ${JSON.stringify({
+                    id: requestId, object: "chat.completion.chunk", created, model: modelName,
+                    choices: [{ index: 0, delta: {}, finish_reason: finish }],
+                    usage: clientUsage,
+                })}\n\n`);
+                if (callCount) metrics.recordToolCalls(callCount);
+                logUsage(usage, { toolCalls: callCount, finishReason: finish });
+                verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[${finish}] code=${code} | calls=${callCount} | usage=${JSON.stringify(usage)}`);
+                console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, finish=${finish}, calls=${callCount})`);
             } else {
                 res.write(`data: ${JSON.stringify({
                     id: requestId, object: "chat.completion.chunk", created, model: modelName,
                     choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-                    usage,
+                    usage: clientUsage,
                 })}\n\n`);
+                logUsage(usage, { toolCalls: 0, finishReason: "stop" });
                 verboseLog(`${requestId.slice(-8)}:RESPONSE_STREAM`, `[stop] code=${code} | chars=${totalContent.length}`);
                 console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (stream, ${totalContent.length} chars)`);
             }
@@ -697,26 +725,30 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
                 return;
             }
 
-            // Parse Claude Code JSON output
-            let claudeResponse;
-            try {
-                const jsonStart = stdout.indexOf("{");
-                claudeResponse = JSON.parse(jsonStart >= 0 ? stdout.slice(jsonStart) : stdout);
-            } catch {
-                claudeResponse = { result: stdout.trim() };
+            const parsedOut = parseClaudeJsonOutput(stdout);
+            if (parsedOut.isError) {
+                const classified = classifyError(null, parsedOut.text || stderrOutput);
+                console.error(`[${new Date().toISOString()}] ✗ Request ${requestId.slice(-8)}: claude result is_error → ${classified.type}`);
+                sendError(res, classified.status, classified.message, classified.type);
+                return;
             }
-
-            const responseText = claudeResponse.result || "";
+            const responseText = parsedOut.text || "";
+            const cu = parsedOut.usage || {};
+            const inTok = cu.input_tokens ?? estimateTokens(prompt);
+            const outTok = cu.output_tokens ?? estimateTokens(responseText);
             const usage = {
-                prompt_tokens: claudeResponse.input_tokens || estimateTokens(prompt),
-                completion_tokens: claudeResponse.output_tokens || estimateTokens(responseText),
-                total_tokens: (claudeResponse.input_tokens || estimateTokens(prompt)) + (claudeResponse.output_tokens || estimateTokens(responseText)),
+                prompt_tokens: inTok, completion_tokens: outTok, total_tokens: inTok + outTok,
+                _claude: { ...cu, total_cost_usd: parsedOut.costUsd, duration_ms: parsedOut.durationMs, num_turns: parsedOut.numTurns, stop_reason: parsedOut.stopReason },
             };
+            // Strip internal _claude before sending usage to the client.
+            const { _claude, ...clientUsage } = usage;
 
             // Tool Bridge Mode: check response for <tool_call> blocks
             if (toolBridgeMode) {
-                const parsedCalls = parseToolCalls(responseText);
+                const { calls: parsedCalls, anomalies } = parseToolCalls(responseText);
+                logAnomalies(requestId, anomalies);
                 if (parsedCalls.length > 0) {
+                    metrics.recordToolCalls(parsedCalls.length);
                     const response = {
                         id: requestId, object: "chat.completion", created, model: modelName,
                         choices: [{
@@ -724,11 +756,12 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
                             message: { role: "assistant", content: null, tool_calls: parsedCalls },
                             finish_reason: "tool_calls",
                         }],
-                        usage,
+                        usage: clientUsage,
                     };
                     console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (non-stream, tool_calls=${parsedCalls.map((c) => c.function.name).join(",")})`);
                     res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
                     verboseLog(`${requestId.slice(-8)}:RESPONSE_BODY`, response);
+                    logUsage(usage, { toolCalls: parsedCalls.length, finishReason: "tool_calls" });
                     res.end(JSON.stringify(response));
                     return;
                 }
@@ -737,11 +770,12 @@ function runClaudeCode(prompt, requestModel, stream, res, tools) {
             const response = {
                 id: requestId, object: "chat.completion", created, model: modelName,
                 choices: [{ index: 0, message: { role: "assistant", content: responseText }, finish_reason: "stop" }],
-                usage,
+                usage: clientUsage,
             };
             console.log(`[${new Date().toISOString()}] ✓ Request ${requestId.slice(-8)}: completed in ${elapsed}s (non-stream, ${responseText.length} chars, usage=${JSON.stringify(usage)})`);
             res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
             verboseLog(`${requestId.slice(-8)}:RESPONSE_BODY`, response);
+            logUsage(usage, { toolCalls: 0, finishReason: "stop" });
             res.end(JSON.stringify(response));
         });
     }
@@ -832,7 +866,7 @@ const server = createServer(async (req, res) => {
             JSON.stringify({
                 status: "ok",
                 service: "claude-code-bridge",
-                version: "1.4.1",
+                version: "1.5.0",
                 model: CONFIG.claudeModel,
                 toolMode: CONFIG.toolMode,
                 permissionMode: CONFIG.permissionMode,
@@ -915,7 +949,8 @@ const server = createServer(async (req, res) => {
             return;
         }
 
-        runClaudeCode(prompt, data.model, stream, res, tools);
+        const clientIp = (req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || "").trim();
+        runClaudeCode(prompt, data.model, stream, res, tools, { clientIp, endpoint: "/v1/chat/completions" });
         return;
     }
 
@@ -967,7 +1002,8 @@ const server = createServer(async (req, res) => {
         }
 
         const adapted = createAnthropicResponseAdapter(res, { model: data.model });
-        runClaudeCode(prompt, converted.model, stream, adapted, tools);
+        const clientIp = (req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || "").trim();
+        runClaudeCode(prompt, converted.model, stream, adapted, tools, { clientIp, endpoint: "/v1/messages" });
         return;
     }
 
@@ -1002,7 +1038,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
         : "none — keep bridge on localhost";
     console.log(`
 ┌──────────────────────────────────────────────────────────┐
-│              claude-code-bridge v1.4.1                    │
+│              claude-code-bridge v1.5.0                    │
 │   OpenAI + Anthropic API  →  Claude Code CLI             │
 ├──────────────────────────────────────────────────────────┤
 │  Endpoint:   http://${CONFIG.host}:${CONFIG.port}/v1/chat/completions  │

@@ -2,6 +2,50 @@
 
 # Changelog
 
+## v1.5.0 — 2026-06-23
+
+### 修正
+- **非串流（`--output-format json`）回應現在能正確解析。** Claude Code 2.1.x 回傳的是一個事件
+  **陣列**；舊的 parser 假設只有單一物件,於是把原始 JSON 當成訊息內容直接丟出來。解析改放進純模組
+  `lib/cli-output.mjs`,它會找出 `result` 事件並取出 assistant 文字。Token 用量也改從該事件的
+  `usage.*` / `total_cost_usd` 讀取,而非用字元數估算。
+
+### 新增
+- **Tool Bridge Mode 強化**（`lib/tool-bridge.mjs`）:
+  - **大括號配對的 `<tool_call>` 解析** — 巢狀物件 / 陣列參數不再被截斷而靜默遺失。
+  - **平行工具呼叫** — 同一回合內多個 `<tool_call>` 區塊會一起回傳,且每筆都有正確的 `index`。
+  - **協定 STOP 規則** — 指示模型在輸出 `<tool_call>` 區塊後就停止,不再幻想出呼叫端尚未執行的
+    「結果」。
+  - **逐步串流** 文字 + `tool_calls`(透過 scanner,不再只是緩衝到最後一次送出）。
+- **可觀測性** — 工具呼叫的解析異常會計入 `/metrics`
+  (`bridge_tool_parse_anomalies_total{type}`)並寫進 log（預設截斷;設
+  `BRIDGE_TOOL_PARSE_LOG_FULL=1` 取得完整片段）。新增指標 `bridge_tool_calls_total`、
+  `bridge_tokens_total{type}`、`bridge_cost_usd_total`。
+- **逐次呼叫的用量 CSV**（`BRIDGE_USAGE_LOG`,預設 `./logs/token-usage.csv`,設 `off` 停用）—
+  每個 request 追加一列:timestamp、source IP、model、tool mode、stream、input/output/cache
+  tokens、`total_cost_usd`、duration、turn 數、tool call 數、finish reason、status。讓共用主機的
+  管理者可追蹤用量與成本。**只記 metadata——絕不記錄 request/response 內容。** 每個檔案請只用一個
+  寫入 process。見 [configuration](configuration.zh-TW.md#逐次呼叫用量-log--tool-bridge-解析v150)。
+- **LLM 模式 host 隔離**（`--setting-sources ""`,`lib/config.mjs`）— `llm` 模式現在**完全不載入**
+  host 的 user/project/local Claude Code 設定,所以它的 plugin、**SessionStart hook**、以及
+  *user 層級* 的 `~/.claude/CLAUDE.md` 都不會注入回應(先前有連線的 client 觀察到 host 的
+  superpowers SessionStart hook 滲進回應——實測預設觸發 6 次,加旗標後 0 次)。OAuth 訂閱認證不受
+  影響。補上 v1.4.1 只能部分緩解的 user 層級設定洩漏(當時只擋了 project 層級 `CLAUDE.md`)。
+- **穩健的模型解析 + `BRIDGE_FORCE_MODEL`**(`lib/config.mjs` → `resolveModel`)。client 帶來的 model
+  只有在它是 Claude 模型時才採用(alias 或 `claude-…` id,會先去掉 `bridge-claude-code/` / `claude/` /
+  `anthropic/` 前綴);其他 IDE(Roo Code / Cline / OpenCode 送 `gpt-4o` 之類)的非 Claude 名稱、或沒帶
+  model,現在會**回退到 `CLAUDE_MODEL`**,而不是把 `claude --model gpt-4o` 丟出去報錯。新增
+  `BRIDGE_FORCE_MODEL`(空 = 關)可在 host 端不管 client 一律鎖定模型——共用主機控成本用。見
+  [configuration](configuration.zh-TW.md#模型選擇與強制鎖定-v15)。
+- **Windows client 啟動器**(`remote-setup/connect-claude.ps1`)— 一行指令把 Windows client 的
+  Claude Code 指向遠端 bridge:health check、`ANTHROPIC_BASE_URL` + 認證、`api.anthropic.com` 的
+  onboarding 繞道,然後在當前目錄啟動 `claude`。見 [integrations](integrations.zh-TW.md)。
+
+### 變更
+- **內部** — 抽出純粹、有單元測試的模組 `lib/tool-bridge.mjs`、`lib/cli-output.mjs`、
+  `lib/usage-log.mjs`。向後相容:純聊天與既有的 `agent` / `llm` 模式行為不變,且串流無工具路徑
+  逐位元組相同。
+
 ## v1.4.1 — 2026-06-22
 
 ### 修正

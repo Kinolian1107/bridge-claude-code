@@ -9,7 +9,8 @@ All configuration is via environment variables (or the `.env` file — the bridg
 | `BRIDGE_PORT` | `18793` | Port for the proxy server |
 | `BRIDGE_HOST` | `127.0.0.1` | Bind address |
 | `BRIDGE_API_KEY` | *(empty)* | **v1.3** — optional bearer auth; when set, every endpoint except `/health` requires the key (see [api.md](api.md#bearer-auth--metrics-v13)) |
-| `CLAUDE_MODEL` | `sonnet` | Default model (alias or full ID) |
+| `CLAUDE_MODEL` | `sonnet` | **Default / fallback** model (alias or full ID). A client's requested model overrides it when valid — see [Model selection](#model-selection--forcing-v15) |
+| `BRIDGE_FORCE_MODEL` | *(empty)* | **v1.5** — when set, ALWAYS use this model and ignore the client's requested model (host-side cost control / pin). Empty = off. See [Model selection](#model-selection--forcing-v15) |
 | `CLAUDE_BIN` | `claude` | Path to the `claude` binary |
 | `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent` (all built-in tools, `--dangerously-skip-permissions`) / `llm` (no built-in tools — pure LLM behaviour; see [LLM mode](#llm-mode--remote-callers)). Runtime default with no env is `agent`; `install.ps1` / `install.sh` (v1.4.1) write `llm` into new `.env` files. |
 | `CLAUDE_PERMISSION_MODE` | `bypassPermissions` | `bypassPermissions` / `plan` / `default` — only applies in `agent` mode |
@@ -17,9 +18,23 @@ All configuration is via environment variables (or the `.env` file — the bridg
 | `BRIDGE_TIMEOUT_MS` | `300000` | Request timeout (5 min) |
 | `BRIDGE_MAX_ARG_LEN` | `32768` | Prompts longer than this are piped via stdin (avoids `E2BIG`) |
 | `BRIDGE_VERBOSE` | `true` | Log full request/response bodies and claude-cli I/O; set `false` to disable |
+| `BRIDGE_USAGE_LOG` | `./logs/token-usage.csv` | **v1.5** — per-call usage CSV; one metadata-only row per request (tokens, cost, duration, …). Set `off` to disable. One writer process per file. See [Per-call usage log](#per-call-usage-log--tool-bridge-parsing-v150) |
+| `BRIDGE_TOOL_PARSE_LOG_FULL` | `0` | **v1.5** — when a `<tool_call>` block fails to parse, the logged snippet is truncated to 200 chars by default; set `1` to log the full untruncated snippet when debugging |
 | `ANTHROPIC_API_KEY` | *(empty)* | If set, `GET /v1/models` returns the live list from the Anthropic API |
 
 > On Windows, `install.ps1` auto-detects the real `claude.exe` (npm / native / winget) and writes it to `CLAUDE_BIN`. If you set it by hand, point at the **`.exe`** — e.g. `C:\Users\you\.local\bin\claude.exe`, or for an npm install `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` — not the `claude.cmd`/`.ps1` shim, which modern Node can't spawn directly.
+
+## Model selection & forcing (v1.5)
+
+The model that actually reaches `claude --model` is resolved per request, in this order:
+
+1. **`BRIDGE_FORCE_MODEL`** (host `.env`) — if set, it is **always** used and the client's requested model is ignored. Use it on a shared host to **pin the model for cost control** (e.g. `BRIDGE_FORCE_MODEL=sonnet`, so a client asking for `opus` still runs on `sonnet`). The toggle is its presence: set it to force, remove/blank it to allow per-request models.
+2. **The client's `model`** — honoured only if it looks like a Claude model: a bare alias (`sonnet` / `opus` / `haiku` / `fable`) or a full `claude-…` id, after stripping a routing prefix (`bridge-claude-code/`, `claude/`, `anthropic/`). This is the "dynamic model switching" that lets a client override the host default per request.
+3. **`CLAUDE_MODEL`** (host default) — used when the client sends **no model**, a blank model, or a **non-Claude** model. Other agent IDEs (Roo Code / Cline / OpenCode) often send a non-Claude name such as `gpt-4o`; rather than handing `claude --model gpt-4o` an invalid name (which errors), the bridge **falls back to `CLAUDE_MODEL`**.
+
+The usage log and the response `model` field record the **resolved** model — what was actually sent to `claude`, not the raw request.
+
+> Only the **model** is forwarded. A client's reasoning-effort / thinking setting (e.g. Claude Code's `xhigh`) is **not** passed through — the host `claude` generates at its own default effort.
 
 ## Claude Code Authentication
 
@@ -133,12 +148,13 @@ BRIDGE_TOOL_MODE=llm
 
 > New installs default to this: `install.ps1` / `install.sh` (v1.4.1) write `BRIDGE_TOOL_MODE=llm` into the generated `.env`. Set `BRIDGE_TOOL_MODE=agent` before install for a single-machine, full-toolset setup.
 
-The bridge then passes `--tools "" --strict-mcp-config --disallowedTools LSP` to `claude`. Claude becomes a pure language model:
+The bridge then passes `--tools "" --strict-mcp-config --disallowedTools LSP --setting-sources ""` to `claude`. Claude becomes a pure language model:
 
 - It cannot access any file on the bridge host. `--tools ""` disables the built-in set (Read, Write, Edit, Bash, WebSearch, …); `--strict-mcp-config` and `--disallowedTools LSP` (v1.4.1) also drop the MCP connectors and the LSP plugin tool, which survive `--tools ""` alone and would otherwise run on the host. Verified: the session starts with an empty tool list.
 - If a caller asks it to "read `config.json`" without providing the content, Claude will reply asking the caller to paste the file directly into the message.
 - `CLAUDE_PERMISSION_MODE` / `--dangerously-skip-permissions` no longer applies (there are no tools to approve).
 - **v1.4.1:** the bridge also launches `claude` in an isolated empty working directory (under the OS temp dir) instead of `$HOME`, so a *project-level* `CLAUDE.md` on the host can't leak into responses. An explicit `CLAUDE_WORKING_DIR` still wins.
+- **v1.5:** `--setting-sources ""` loads **none** of the host's user/project/local settings, so its plugins, **SessionStart hooks**, and *user-level* `~/.claude/CLAUDE.md` / custom settings never load and can't inject into responses. (A connected client previously observed the host's superpowers SessionStart hook bleeding into replies.) Auth is not a setting source, so the claude.ai subscription / OAuth login still works.
 
 ### How callers send file content
 
@@ -213,9 +229,38 @@ Pointing Claude Code, OpenCode, RooCode, Continue.dev, etc. at the bridge? Those
 
 `--tools ""` removes the built-in tools, but `claude -p` is still a configured Claude Code process. LLM mode does **not** neutralize:
 
-- **User-level Claude Code config** — v1.4.1 already isolates the working dir, so a *project-level* `CLAUDE.md` no longer leaks. But the *user-level* `~/.claude/CLAUDE.md` and `~/.claude/settings.json` (custom system prompt, output style) are loaded regardless of cwd and still shape responses. For a fully reproducible model endpoint, run the LLM instance under a clean `HOME` / Claude Code config.
-- **The agent persona / hallucinated tools** — responses still come from Claude Code's coding-agent system prompt, so answers can be terse or coding-flavoured. Because of the user-level config above, Claude may even *claim* to have tools (e.g. "I can use Read/Bash") — but the real tool registry is empty (verified `tools:[]`), so any such call would simply not exist. It is a cosmetic confusion, not host access.
-- **Streaming of `tools[]` calls** — when a request includes `tools[]`, the response is buffered and the `tool_calls` are emitted at the end (not token-by-token), with parallel calls in a single delta and no per-call `index`. Plain (no-`tools[]`) requests stream normally.
+- **The agent persona** — responses still come from Claude Code's built-in coding-agent system prompt. This is inherent to `claude -p` (not a setting source), so it remains and can make answers terse or coding-flavoured. Claude may occasionally *claim* to have tools (e.g. "I can use Read/Bash"), but the real tool registry is empty (verified `tools:[]`), so any such call simply does not exist — cosmetic confusion, not host access.
+
+> **Resolved in v1.5:** earlier versions could not isolate the *user-level* `~/.claude/CLAUDE.md`, `settings.json`, plugins, or SessionStart hooks (only the *project-level* `CLAUDE.md` via the working dir). `--setting-sources ""` now stops all of them from loading, while OAuth subscription auth still works — so the endpoint is much closer to a clean model provider.
+- **Streaming of `tools[]` calls** — when a request includes `tools[]` (v1.5), any leading text streams as content, then each `<tool_call>` is emitted as its own `tool_calls` delta the moment its block closes, with parallel calls each carrying the correct per-call `index`. Text after the first tool call is suppressed (the model is told to stop after the blocks). Plain (no-`tools[]`) requests stream normally and are unaffected.
+
+## Per-call usage log & Tool Bridge parsing (v1.5.0)
+
+### Per-call usage CSV (`BRIDGE_USAGE_LOG`)
+
+When `BRIDGE_USAGE_LOG` is set (it defaults to `./logs/token-usage.csv`; set it to `off` to disable), the bridge appends **one row per request** so a shared-host admin can track usage and cost over time. The file is plain CSV with this header:
+
+```
+timestamp_iso,request_id,endpoint,client_ip,model,tool_mode,stream,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost_usd,duration_ms,num_turns,tool_calls,finish_reason,status
+```
+
+- **Metadata only** — token counts, cost, timing, and request shape. The prompt, the response text, tool arguments, and tool results are **never** written to this file.
+- Token counts and `total_cost_usd` come from the `claude` result event's `usage.*` / `total_cost_usd` (the same numbers the Prometheus `/metrics` endpoint reports), not an estimate.
+- **One writer process per file.** The bridge appends with no inter-process locking, so if you run two bridge instances pointed at the same path their rows can interleave. Give each instance its own `BRIDGE_USAGE_LOG` path (or leave one on the default and point the other elsewhere).
+
+```bash
+# Tail the running cost
+column -s, -t logs/token-usage.csv | less -S
+```
+
+### Tool Bridge Mode parsing & anomalies
+
+In Tool Bridge Mode (a request that includes `tools[]`), the bridge parses the `<tool_call>` blocks Claude emits back into OpenAI `tool_calls`. The parser is brace-balanced, so nested-object / array arguments are kept intact, and multiple blocks in one turn are returned as parallel calls each with the correct `index`.
+
+When a `<tool_call>` block can't be parsed (malformed JSON, a near-miss that almost matched the protocol, …), the bridge:
+
+- **counts it in `/metrics`** as `bridge_tool_parse_anomalies_total{type="…"}` (e.g. `type="invalid_json"`, `type="near_miss"`), alongside the new `bridge_tool_calls_total`, `bridge_tokens_total{type}`, and `bridge_cost_usd_total` counters;
+- **logs a snippet** of the offending text. The snippet is **truncated to 200 chars by default** to avoid leaking prompt/response data in shared deployments; set `BRIDGE_TOOL_PARSE_LOG_FULL=1` to log the full untruncated snippet while debugging a parsing issue.
 
 ## Logs
 

@@ -9,7 +9,8 @@
 | `BRIDGE_PORT` | `18793` | proxy server 的 port |
 | `BRIDGE_HOST` | `127.0.0.1` | 綁定位址 |
 | `BRIDGE_API_KEY` | *(空)* | **v1.3** — 可選的 bearer auth；設定後除 `/health` 外每個 endpoint 都需要 key（見 [api.zh-TW.md](api.zh-TW.md#bearer-auth--metricsv13)） |
-| `CLAUDE_MODEL` | `sonnet` | 預設 model（alias 或完整 ID） |
+| `CLAUDE_MODEL` | `sonnet` | **預設 / fallback** model（alias 或完整 ID）。client 帶來的 model 若合法會覆寫它——見 [模型選擇](#模型選擇與強制鎖定-v15) |
+| `BRIDGE_FORCE_MODEL` | *(空)* | **v1.5** — 設定後一律使用此 model、忽略 client 要求的 model(host 端控成本 / 鎖模)。空 = 關閉。見 [模型選擇](#模型選擇與強制鎖定-v15) |
 | `CLAUDE_BIN` | `claude` | `claude` binary 路徑 |
 | `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent`（所有內建工具，`--dangerously-skip-permissions`）/ `llm`（停用所有內建工具——純 LLM 行為；見 [LLM 模式](#llm-模式--遠端呼叫)）。沒設 env 時的執行期預設是 `agent`;`install.ps1` / `install.sh`（v1.4.1）會把 `llm` 寫進新的 `.env`。 |
 | `CLAUDE_PERMISSION_MODE` | `bypassPermissions` | `bypassPermissions` / `plan` / `default`——僅在 `agent` 模式下生效 |
@@ -17,9 +18,23 @@
 | `BRIDGE_TIMEOUT_MS` | `300000` | request timeout（5 分鐘） |
 | `BRIDGE_MAX_ARG_LEN` | `32768` | 超過此長度的 prompt 改走 stdin（避免 `E2BIG`） |
 | `BRIDGE_VERBOSE` | `true` | log 完整 request/response body 與 claude-cli I/O；設 `false` 關閉 |
+| `BRIDGE_USAGE_LOG` | `./logs/token-usage.csv` | **v1.5** — 逐次呼叫的用量 CSV;每個 request 一列、只記 metadata(tokens、成本、duration……）。設 `off` 停用。每個檔案只用一個寫入 process。見 [逐次呼叫用量 log](#逐次呼叫用量-log--tool-bridge-解析v150) |
+| `BRIDGE_TOOL_PARSE_LOG_FULL` | `0` | **v1.5** — 當 `<tool_call>` 區塊解析失敗時,寫進 log 的片段預設截斷成 200 字元;除錯時設 `1` 記錄完整未截斷片段 |
 | `ANTHROPIC_API_KEY` | *(空)* | 若設定，`GET /v1/models` 會回傳 Anthropic API 的即時清單 |
 
 > Windows 上 `install.ps1` 會自動偵測真正的 `claude.exe`（npm / 原生 / winget）並寫進 `CLAUDE_BIN`。若要手動設定，請指向 **`.exe`**——例如 `C:\Users\you\.local\bin\claude.exe`,或 npm 安裝的 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`——而非 `claude.cmd`/`.ps1` shim,新版 Node 無法直接 spawn 它們。
+
+## 模型選擇與強制鎖定 (v1.5)
+
+每個 request 實際送到 `claude --model` 的模型,依下列順序決定:
+
+1. **`BRIDGE_FORCE_MODEL`**(host `.env`)— 設定後**一律**使用它,**忽略 client 要求的 model**。在共用主機上用來**鎖定模型控成本**(例如 `BRIDGE_FORCE_MODEL=sonnet`,即使 client 要 `opus` 也跑 `sonnet`)。開關就是「有沒有設」:設了就強制,移除/留空就放行讓 client 自選。
+2. **client 的 `model`** — 只有在它看起來是 Claude 模型時才採用:裸 alias(`sonnet` / `opus` / `haiku` / `fable`)或完整 `claude-…` id(會先去掉 routing 前綴 `bridge-claude-code/`、`claude/`、`anthropic/`)。這就是讓 client 可以 per-request 覆寫 host 預設的「dynamic model switching」。
+3. **`CLAUDE_MODEL`**(host 預設)— 當 client **沒帶 model**、帶空白、或帶**非 Claude** 模型時使用。其他 agent IDE(Roo Code / Cline / OpenCode)常送非 Claude 名稱(例如 `gpt-4o`);bridge **不會**把這種無效名稱丟給 `claude --model gpt-4o`(那會直接報錯),而是**回退到 `CLAUDE_MODEL`**。
+
+usage log 與回應的 `model` 欄記錄的是**解析後實際使用**的模型,不是原始請求。
+
+> 只有 **model** 會被轉發。client 的 reasoning-effort / thinking 設定(例如 Claude Code 的 `xhigh`)**不會**被帶過去——host 端的 `claude` 用它自己的預設 effort 生成。
 
 ## Claude Code 認證
 
@@ -133,12 +148,13 @@ BRIDGE_TOOL_MODE=llm
 
 > 新安裝預設就是這個:`install.ps1` / `install.sh`（v1.4.1）會把 `BRIDGE_TOOL_MODE=llm` 寫進產生的 `.env`。若要單機、完整工具集的設定,安裝前先設 `BRIDGE_TOOL_MODE=agent`。
 
-bridge 就會帶 `--tools "" --strict-mcp-config --disallowedTools LSP` 呼叫 `claude`。Claude 變成純語言模型：
+bridge 就會帶 `--tools "" --strict-mcp-config --disallowedTools LSP --setting-sources ""` 呼叫 `claude`。Claude 變成純語言模型：
 
 - 無法存取 bridge host 上的任何檔案。`--tools ""` 停用內建工具集（Read、Write、Edit、Bash、WebSearch……）;`--strict-mcp-config` 與 `--disallowedTools LSP`(v1.4.1)再把 MCP connector 與 LSP plugin 工具一併移除——這兩者單靠 `--tools ""` 會殘留、且會在 host 上執行。已驗證:session 啟動時工具清單為空。
 - 若呼叫端叫它「讀 `config.json`」但沒附上內容，Claude 會回覆要求對方把檔案直接貼過來。
 - `CLAUDE_PERMISSION_MODE` / `--dangerously-skip-permissions` 不再適用（沒有工具就沒有需要審核的動作）。
 - **v1.4.1:** bridge 還會把 `claude` 啟動在一個隔離的空工作目錄（OS 暫存目錄底下),而非 `$HOME`,讓 host 上 *project 層級* 的 `CLAUDE.md` 不會滲進回應。明確設定 `CLAUDE_WORKING_DIR` 仍會優先。
+- **v1.5:** `--setting-sources ""` **完全不載入** host 的 user/project/local 設定,所以它的 plugin、**SessionStart hook**、以及 *user 層級* 的 `~/.claude/CLAUDE.md` / 自訂 settings 都不會載入、也無法注入回應。(先前曾有連線的 client 觀察到 host 的 superpowers SessionStart hook 滲進回應。)認證不屬於設定來源,所以 claude.ai 訂閱 / OAuth 登入照常運作。
 
 ### 呼叫端如何傳遞檔案內容
 
@@ -213,9 +229,38 @@ BRIDGE_HOST=0.0.0.0   BRIDGE_PORT=18794 BRIDGE_TOOL_MODE=llm \
 
 `--tools ""` 移除的是內建工具,但 `claude -p` 仍然是一個帶設定的 Claude Code process。LLM 模式**不會**中和掉:
 
-- **User 層級的 Claude Code 設定** — v1.4.1 已隔離工作目錄,所以 *project 層級* 的 `CLAUDE.md` 不再滲入。但 *user 層級* 的 `~/.claude/CLAUDE.md` 與 `~/.claude/settings.json`(自訂 system prompt、output style)不論 cwd 都會載入,仍會影響回應。要完全可重現的模型端點,用一份乾淨的 `HOME` / Claude Code 設定來跑 LLM 實例。
-- **Agent 人格 / 幻想出來的工具** — 回應仍出自 Claude Code 的 coding-agent system prompt,所以可能偏簡短、偏寫程式口吻。又因為上面那條 user 層級設定,Claude 甚至可能*聲稱*自己有工具(例如「我可以用 Read/Bash」)——但真正的工具註冊表是空的(已驗證 `tools:[]`),所以那種呼叫根本不存在。這只是表面上的混淆,不是 host 存取。
-- **`tools[]` 呼叫的串流** — 當 request 帶 `tools[]` 時,回應會被緩衝,`tool_calls` 在最後一次送出(不是逐 token),多個平行呼叫擠在同一個 delta、且沒有逐筆的 `index`。純文字(無 `tools[]`)的 request 則正常串流。
+- **Agent 人格** — 回應仍出自 Claude Code 內建的 coding-agent system prompt。這是 `claude -p` 本身固有的(不屬於設定來源),所以會保留,可能讓回答偏簡短、偏寫程式口吻。Claude 偶爾可能*聲稱*自己有工具(例如「我可以用 Read/Bash」),但真正的工具註冊表是空的(已驗證 `tools:[]`),那種呼叫根本不存在——只是表面混淆,不是 host 存取。
+
+> **v1.5 已解決:** 先前版本無法隔離 *user 層級* 的 `~/.claude/CLAUDE.md`、`settings.json`、plugin 或 SessionStart hook(只隔離了 *project 層級* 的 `CLAUDE.md`/工作目錄)。`--setting-sources ""` 現在讓這些全部不載入,且 OAuth 訂閱認證照常運作——端點因此更接近一個乾淨的模型供應商。
+- **`tools[]` 呼叫的串流** — 當 request 帶 `tools[]`(v1.5)時,前導文字會先以 content 串流,接著每個 `<tool_call>` 在其區塊一閉合就立即以獨立的 `tool_calls` delta 送出,多個平行呼叫各自帶正確的 `index`。第一個 tool call 之後的文字會被抑制(協定要求模型在區塊後停止)。純文字(無 `tools[]`)的 request 則正常串流、不受影響。
+
+## 逐次呼叫用量 log 與 Tool Bridge 解析（v1.5.0）
+
+### 逐次呼叫用量 CSV（`BRIDGE_USAGE_LOG`）
+
+當 `BRIDGE_USAGE_LOG` 有設定（預設 `./logs/token-usage.csv`;設 `off` 停用）時,bridge 會在**每個 request 追加一列**,讓共用主機的管理者能長期追蹤用量與成本。檔案是純 CSV,標頭如下:
+
+```
+timestamp_iso,request_id,endpoint,client_ip,model,tool_mode,stream,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost_usd,duration_ms,num_turns,tool_calls,finish_reason,status
+```
+
+- **只記 metadata** — token 數、成本、時間與 request 形狀。prompt、回應文字、工具參數、工具結果**絕不**寫進這個檔案。
+- token 數與 `total_cost_usd` 來自 `claude` 的 result 事件的 `usage.*` / `total_cost_usd`(和 Prometheus `/metrics` 端點回報的是同一組數字),不是估算值。
+- **每個檔案只用一個寫入 process。** bridge 是直接 append、沒有跨 process 鎖,所以若兩個 bridge 實例指向同一個路徑,它們的列可能交錯。請給每個實例各自的 `BRIDGE_USAGE_LOG` 路徑(或一個留預設、另一個指到別處)。
+
+```bash
+# 追蹤累計成本
+column -s, -t logs/token-usage.csv | less -S
+```
+
+### Tool Bridge Mode 解析與異常
+
+在 Tool Bridge Mode 下(request 帶了 `tools[]`),bridge 會把 Claude 回傳的 `<tool_call>` 區塊解析回 OpenAI `tool_calls`。parser 採大括號配對,所以巢狀物件 / 陣列參數會保持完整,同一回合的多個區塊會以平行呼叫回傳、各帶正確的 `index`。
+
+當某個 `<tool_call>` 區塊無法解析(JSON 格式錯誤、差一點符合協定的 near-miss……)時,bridge 會:
+
+- **在 `/metrics` 計數** `bridge_tool_parse_anomalies_total{type="…"}`(例如 `type="invalid_json"`、`type="near_miss"`),與新增的 `bridge_tool_calls_total`、`bridge_tokens_total{type}`、`bridge_cost_usd_total` 一起;
+- **記錄一段片段**。該片段**預設截斷成 200 字元**,以免在共用部署中外洩 prompt/response 資料;除錯解析問題時設 `BRIDGE_TOOL_PARSE_LOG_FULL=1` 記錄完整未截斷片段。
 
 ## Logs
 
