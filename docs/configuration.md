@@ -9,7 +9,8 @@ All configuration is via environment variables (or the `.env` file — the bridg
 | `BRIDGE_PORT` | `18793` | Port for the proxy server |
 | `BRIDGE_HOST` | `127.0.0.1` | Bind address |
 | `BRIDGE_API_KEY` | *(empty)* | **v1.3** — optional bearer auth; when set, every endpoint except `/health` requires the key (see [api.md](api.md#bearer-auth--metrics-v13)) |
-| `CLAUDE_MODEL` | `sonnet` | Default model (alias or full ID) |
+| `CLAUDE_MODEL` | `sonnet` | **Default / fallback** model (alias or full ID). A client's requested model overrides it when valid — see [Model selection](#model-selection--forcing-v15) |
+| `BRIDGE_FORCE_MODEL` | *(empty)* | **v1.5** — when set, ALWAYS use this model and ignore the client's requested model (host-side cost control / pin). Empty = off. See [Model selection](#model-selection--forcing-v15) |
 | `CLAUDE_BIN` | `claude` | Path to the `claude` binary |
 | `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent` (all built-in tools, `--dangerously-skip-permissions`) / `llm` (no built-in tools — pure LLM behaviour; see [LLM mode](#llm-mode--remote-callers)). Runtime default with no env is `agent`; `install.ps1` / `install.sh` (v1.4.1) write `llm` into new `.env` files. |
 | `CLAUDE_PERMISSION_MODE` | `bypassPermissions` | `bypassPermissions` / `plan` / `default` — only applies in `agent` mode |
@@ -22,6 +23,18 @@ All configuration is via environment variables (or the `.env` file — the bridg
 | `ANTHROPIC_API_KEY` | *(empty)* | If set, `GET /v1/models` returns the live list from the Anthropic API |
 
 > On Windows, `install.ps1` auto-detects the real `claude.exe` (npm / native / winget) and writes it to `CLAUDE_BIN`. If you set it by hand, point at the **`.exe`** — e.g. `C:\Users\you\.local\bin\claude.exe`, or for an npm install `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` — not the `claude.cmd`/`.ps1` shim, which modern Node can't spawn directly.
+
+## Model selection & forcing (v1.5)
+
+The model that actually reaches `claude --model` is resolved per request, in this order:
+
+1. **`BRIDGE_FORCE_MODEL`** (host `.env`) — if set, it is **always** used and the client's requested model is ignored. Use it on a shared host to **pin the model for cost control** (e.g. `BRIDGE_FORCE_MODEL=sonnet`, so a client asking for `opus` still runs on `sonnet`). The toggle is its presence: set it to force, remove/blank it to allow per-request models.
+2. **The client's `model`** — honoured only if it looks like a Claude model: a bare alias (`sonnet` / `opus` / `haiku` / `fable`) or a full `claude-…` id, after stripping a routing prefix (`bridge-claude-code/`, `claude/`, `anthropic/`). This is the "dynamic model switching" that lets a client override the host default per request.
+3. **`CLAUDE_MODEL`** (host default) — used when the client sends **no model**, a blank model, or a **non-Claude** model. Other agent IDEs (Roo Code / Cline / OpenCode) often send a non-Claude name such as `gpt-4o`; rather than handing `claude --model gpt-4o` an invalid name (which errors), the bridge **falls back to `CLAUDE_MODEL`**.
+
+The usage log and the response `model` field record the **resolved** model — what was actually sent to `claude`, not the raw request.
+
+> Only the **model** is forwarded. A client's reasoning-effort / thinking setting (e.g. Claude Code's `xhigh`) is **not** passed through — the host `claude` generates at its own default effort.
 
 ## Claude Code Authentication
 

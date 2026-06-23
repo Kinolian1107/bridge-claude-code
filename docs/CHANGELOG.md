@@ -33,6 +33,13 @@
   had observed the host's superpowers SessionStart hook bleeding into replies — verified the hook
   fired 6× by default, 0× with the flag). OAuth subscription auth is unaffected. Closes the
   user-level-config leak that v1.4.1 could only partially mitigate (project-level `CLAUDE.md`).
+- **Robust model resolution + `BRIDGE_FORCE_MODEL`** (`lib/config.mjs` → `resolveModel`). A client's
+  requested model is honoured only if it is a Claude model (alias or `claude-…` id, after stripping
+  `bridge-claude-code/` / `claude/` / `anthropic/` prefixes); a non-Claude name from another IDE
+  (Roo Code / Cline / OpenCode sending e.g. `gpt-4o`), or a missing/blank model, now **falls back to
+  `CLAUDE_MODEL`** instead of erroring `claude --model gpt-4o`. New `BRIDGE_FORCE_MODEL` (empty = off)
+  pins the model host-side regardless of the client — for cost control on a shared host. See
+  [configuration](configuration.md#model-selection--forcing-v15).
 
 ### Changed
 - **Internal** — extracted pure, unit-tested modules `lib/tool-bridge.mjs`, `lib/cli-output.mjs`,

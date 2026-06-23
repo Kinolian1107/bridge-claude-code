@@ -9,7 +9,8 @@
 | `BRIDGE_PORT` | `18793` | proxy server 的 port |
 | `BRIDGE_HOST` | `127.0.0.1` | 綁定位址 |
 | `BRIDGE_API_KEY` | *(空)* | **v1.3** — 可選的 bearer auth；設定後除 `/health` 外每個 endpoint 都需要 key（見 [api.zh-TW.md](api.zh-TW.md#bearer-auth--metricsv13)） |
-| `CLAUDE_MODEL` | `sonnet` | 預設 model（alias 或完整 ID） |
+| `CLAUDE_MODEL` | `sonnet` | **預設 / fallback** model（alias 或完整 ID）。client 帶來的 model 若合法會覆寫它——見 [模型選擇](#模型選擇與強制鎖定-v15) |
+| `BRIDGE_FORCE_MODEL` | *(空)* | **v1.5** — 設定後一律使用此 model、忽略 client 要求的 model(host 端控成本 / 鎖模)。空 = 關閉。見 [模型選擇](#模型選擇與強制鎖定-v15) |
 | `CLAUDE_BIN` | `claude` | `claude` binary 路徑 |
 | `BRIDGE_TOOL_MODE` | `agent` | **v1.4** — `agent`（所有內建工具，`--dangerously-skip-permissions`）/ `llm`（停用所有內建工具——純 LLM 行為；見 [LLM 模式](#llm-模式--遠端呼叫)）。沒設 env 時的執行期預設是 `agent`;`install.ps1` / `install.sh`（v1.4.1）會把 `llm` 寫進新的 `.env`。 |
 | `CLAUDE_PERMISSION_MODE` | `bypassPermissions` | `bypassPermissions` / `plan` / `default`——僅在 `agent` 模式下生效 |
@@ -22,6 +23,18 @@
 | `ANTHROPIC_API_KEY` | *(空)* | 若設定，`GET /v1/models` 會回傳 Anthropic API 的即時清單 |
 
 > Windows 上 `install.ps1` 會自動偵測真正的 `claude.exe`（npm / 原生 / winget）並寫進 `CLAUDE_BIN`。若要手動設定，請指向 **`.exe`**——例如 `C:\Users\you\.local\bin\claude.exe`,或 npm 安裝的 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`——而非 `claude.cmd`/`.ps1` shim,新版 Node 無法直接 spawn 它們。
+
+## 模型選擇與強制鎖定 (v1.5)
+
+每個 request 實際送到 `claude --model` 的模型,依下列順序決定:
+
+1. **`BRIDGE_FORCE_MODEL`**(host `.env`)— 設定後**一律**使用它,**忽略 client 要求的 model**。在共用主機上用來**鎖定模型控成本**(例如 `BRIDGE_FORCE_MODEL=sonnet`,即使 client 要 `opus` 也跑 `sonnet`)。開關就是「有沒有設」:設了就強制,移除/留空就放行讓 client 自選。
+2. **client 的 `model`** — 只有在它看起來是 Claude 模型時才採用:裸 alias(`sonnet` / `opus` / `haiku` / `fable`)或完整 `claude-…` id(會先去掉 routing 前綴 `bridge-claude-code/`、`claude/`、`anthropic/`)。這就是讓 client 可以 per-request 覆寫 host 預設的「dynamic model switching」。
+3. **`CLAUDE_MODEL`**(host 預設)— 當 client **沒帶 model**、帶空白、或帶**非 Claude** 模型時使用。其他 agent IDE(Roo Code / Cline / OpenCode)常送非 Claude 名稱(例如 `gpt-4o`);bridge **不會**把這種無效名稱丟給 `claude --model gpt-4o`(那會直接報錯),而是**回退到 `CLAUDE_MODEL`**。
+
+usage log 與回應的 `model` 欄記錄的是**解析後實際使用**的模型,不是原始請求。
+
+> 只有 **model** 會被轉發。client 的 reasoning-effort / thinking 設定(例如 Claude Code 的 `xhigh`)**不會**被帶過去——host 端的 `claude` 用它自己的預設 effort 生成。
 
 ## Claude Code 認證
 

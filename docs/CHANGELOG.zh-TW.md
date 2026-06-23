@@ -31,6 +31,12 @@
   *user 層級* 的 `~/.claude/CLAUDE.md` 都不會注入回應(先前有連線的 client 觀察到 host 的
   superpowers SessionStart hook 滲進回應——實測預設觸發 6 次,加旗標後 0 次)。OAuth 訂閱認證不受
   影響。補上 v1.4.1 只能部分緩解的 user 層級設定洩漏(當時只擋了 project 層級 `CLAUDE.md`)。
+- **穩健的模型解析 + `BRIDGE_FORCE_MODEL`**(`lib/config.mjs` → `resolveModel`)。client 帶來的 model
+  只有在它是 Claude 模型時才採用(alias 或 `claude-…` id,會先去掉 `bridge-claude-code/` / `claude/` /
+  `anthropic/` 前綴);其他 IDE(Roo Code / Cline / OpenCode 送 `gpt-4o` 之類)的非 Claude 名稱、或沒帶
+  model,現在會**回退到 `CLAUDE_MODEL`**,而不是把 `claude --model gpt-4o` 丟出去報錯。新增
+  `BRIDGE_FORCE_MODEL`(空 = 關)可在 host 端不管 client 一律鎖定模型——共用主機控成本用。見
+  [configuration](configuration.zh-TW.md#模型選擇與強制鎖定-v15)。
 
 ### 變更
 - **內部** — 抽出純粹、有單元測試的模組 `lib/tool-bridge.mjs`、`lib/cli-output.mjs`、
