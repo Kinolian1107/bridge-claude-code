@@ -2,7 +2,7 @@
 
 # Changelog
 
-## v1.5.0 — 2026-06-22
+## v1.5.0 — 2026-06-23
 
 ### 修正
 - **非串流（`--output-format json`）回應現在能正確解析。** Claude Code 2.1.x 回傳的是一個事件
@@ -26,6 +26,11 @@
   tokens、`total_cost_usd`、duration、turn 數、tool call 數、finish reason、status。讓共用主機的
   管理者可追蹤用量與成本。**只記 metadata——絕不記錄 request/response 內容。** 每個檔案請只用一個
   寫入 process。見 [configuration](configuration.zh-TW.md#逐次呼叫用量-log--tool-bridge-解析v150)。
+- **LLM 模式 host 隔離**（`--setting-sources ""`,`lib/config.mjs`）— `llm` 模式現在**完全不載入**
+  host 的 user/project/local Claude Code 設定,所以它的 plugin、**SessionStart hook**、以及
+  *user 層級* 的 `~/.claude/CLAUDE.md` 都不會注入回應(先前有連線的 client 觀察到 host 的
+  superpowers SessionStart hook 滲進回應——實測預設觸發 6 次,加旗標後 0 次)。OAuth 訂閱認證不受
+  影響。補上 v1.4.1 只能部分緩解的 user 層級設定洩漏(當時只擋了 project 層級 `CLAUDE.md`)。
 
 ### 變更
 - **內部** — 抽出純粹、有單元測試的模組 `lib/tool-bridge.mjs`、`lib/cli-output.mjs`、

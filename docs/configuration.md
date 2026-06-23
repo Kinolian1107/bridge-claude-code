@@ -135,12 +135,13 @@ BRIDGE_TOOL_MODE=llm
 
 > New installs default to this: `install.ps1` / `install.sh` (v1.4.1) write `BRIDGE_TOOL_MODE=llm` into the generated `.env`. Set `BRIDGE_TOOL_MODE=agent` before install for a single-machine, full-toolset setup.
 
-The bridge then passes `--tools "" --strict-mcp-config --disallowedTools LSP` to `claude`. Claude becomes a pure language model:
+The bridge then passes `--tools "" --strict-mcp-config --disallowedTools LSP --setting-sources ""` to `claude`. Claude becomes a pure language model:
 
 - It cannot access any file on the bridge host. `--tools ""` disables the built-in set (Read, Write, Edit, Bash, WebSearch, …); `--strict-mcp-config` and `--disallowedTools LSP` (v1.4.1) also drop the MCP connectors and the LSP plugin tool, which survive `--tools ""` alone and would otherwise run on the host. Verified: the session starts with an empty tool list.
 - If a caller asks it to "read `config.json`" without providing the content, Claude will reply asking the caller to paste the file directly into the message.
 - `CLAUDE_PERMISSION_MODE` / `--dangerously-skip-permissions` no longer applies (there are no tools to approve).
 - **v1.4.1:** the bridge also launches `claude` in an isolated empty working directory (under the OS temp dir) instead of `$HOME`, so a *project-level* `CLAUDE.md` on the host can't leak into responses. An explicit `CLAUDE_WORKING_DIR` still wins.
+- **v1.5:** `--setting-sources ""` loads **none** of the host's user/project/local settings, so its plugins, **SessionStart hooks**, and *user-level* `~/.claude/CLAUDE.md` / custom settings never load and can't inject into responses. (A connected client previously observed the host's superpowers SessionStart hook bleeding into replies.) Auth is not a setting source, so the claude.ai subscription / OAuth login still works.
 
 ### How callers send file content
 
@@ -215,8 +216,9 @@ Pointing Claude Code, OpenCode, RooCode, Continue.dev, etc. at the bridge? Those
 
 `--tools ""` removes the built-in tools, but `claude -p` is still a configured Claude Code process. LLM mode does **not** neutralize:
 
-- **User-level Claude Code config** — v1.4.1 already isolates the working dir, so a *project-level* `CLAUDE.md` no longer leaks. But the *user-level* `~/.claude/CLAUDE.md` and `~/.claude/settings.json` (custom system prompt, output style) are loaded regardless of cwd and still shape responses. For a fully reproducible model endpoint, run the LLM instance under a clean `HOME` / Claude Code config.
-- **The agent persona / hallucinated tools** — responses still come from Claude Code's coding-agent system prompt, so answers can be terse or coding-flavoured. Because of the user-level config above, Claude may even *claim* to have tools (e.g. "I can use Read/Bash") — but the real tool registry is empty (verified `tools:[]`), so any such call would simply not exist. It is a cosmetic confusion, not host access.
+- **The agent persona** — responses still come from Claude Code's built-in coding-agent system prompt. This is inherent to `claude -p` (not a setting source), so it remains and can make answers terse or coding-flavoured. Claude may occasionally *claim* to have tools (e.g. "I can use Read/Bash"), but the real tool registry is empty (verified `tools:[]`), so any such call simply does not exist — cosmetic confusion, not host access.
+
+> **Resolved in v1.5:** earlier versions could not isolate the *user-level* `~/.claude/CLAUDE.md`, `settings.json`, plugins, or SessionStart hooks (only the *project-level* `CLAUDE.md` via the working dir). `--setting-sources ""` now stops all of them from loading, while OAuth subscription auth still works — so the endpoint is much closer to a clean model provider.
 - **Streaming of `tools[]` calls** — when a request includes `tools[]` (v1.5), any leading text streams as content, then each `<tool_call>` is emitted as its own `tool_calls` delta the moment its block closes, with parallel calls each carrying the correct per-call `index`. Text after the first tool call is suppressed (the model is told to stop after the blocks). Plain (no-`tools[]`) requests stream normally and are unaffected.
 
 ## Per-call usage log & Tool Bridge parsing (v1.5.0)

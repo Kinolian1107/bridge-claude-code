@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.5.0 — 2026-06-22
+## v1.5.0 — 2026-06-23
 
 ### Fixed
 - **Non-stream (`--output-format json`) responses now parse correctly.** Claude Code 2.1.x returns
@@ -27,6 +27,12 @@
   tokens, `total_cost_usd`, duration, num turns, tool calls, finish reason, status. Lets a
   shared-host admin track usage and cost. **Metadata only — never request/response content.** Use
   one writer process per file. See [configuration](configuration.md#per-call-usage-log--tool-bridge-parsing-v150).
+- **LLM-mode host isolation** (`--setting-sources ""`, `lib/config.mjs`) — `llm` mode now loads
+  **none** of the host's user/project/local Claude Code settings, so its plugins, **SessionStart
+  hooks**, and *user-level* `~/.claude/CLAUDE.md` no longer inject into responses (a connected client
+  had observed the host's superpowers SessionStart hook bleeding into replies — verified the hook
+  fired 6× by default, 0× with the flag). OAuth subscription auth is unaffected. Closes the
+  user-level-config leak that v1.4.1 could only partially mitigate (project-level `CLAUDE.md`).
 
 ### Changed
 - **Internal** — extracted pure, unit-tested modules `lib/tool-bridge.mjs`, `lib/cli-output.mjs`,

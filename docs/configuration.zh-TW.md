@@ -135,12 +135,13 @@ BRIDGE_TOOL_MODE=llm
 
 > 新安裝預設就是這個:`install.ps1` / `install.sh`（v1.4.1）會把 `BRIDGE_TOOL_MODE=llm` 寫進產生的 `.env`。若要單機、完整工具集的設定,安裝前先設 `BRIDGE_TOOL_MODE=agent`。
 
-bridge 就會帶 `--tools "" --strict-mcp-config --disallowedTools LSP` 呼叫 `claude`。Claude 變成純語言模型：
+bridge 就會帶 `--tools "" --strict-mcp-config --disallowedTools LSP --setting-sources ""` 呼叫 `claude`。Claude 變成純語言模型：
 
 - 無法存取 bridge host 上的任何檔案。`--tools ""` 停用內建工具集（Read、Write、Edit、Bash、WebSearch……）;`--strict-mcp-config` 與 `--disallowedTools LSP`(v1.4.1)再把 MCP connector 與 LSP plugin 工具一併移除——這兩者單靠 `--tools ""` 會殘留、且會在 host 上執行。已驗證:session 啟動時工具清單為空。
 - 若呼叫端叫它「讀 `config.json`」但沒附上內容，Claude 會回覆要求對方把檔案直接貼過來。
 - `CLAUDE_PERMISSION_MODE` / `--dangerously-skip-permissions` 不再適用（沒有工具就沒有需要審核的動作）。
 - **v1.4.1:** bridge 還會把 `claude` 啟動在一個隔離的空工作目錄（OS 暫存目錄底下),而非 `$HOME`,讓 host 上 *project 層級* 的 `CLAUDE.md` 不會滲進回應。明確設定 `CLAUDE_WORKING_DIR` 仍會優先。
+- **v1.5:** `--setting-sources ""` **完全不載入** host 的 user/project/local 設定,所以它的 plugin、**SessionStart hook**、以及 *user 層級* 的 `~/.claude/CLAUDE.md` / 自訂 settings 都不會載入、也無法注入回應。(先前曾有連線的 client 觀察到 host 的 superpowers SessionStart hook 滲進回應。)認證不屬於設定來源,所以 claude.ai 訂閱 / OAuth 登入照常運作。
 
 ### 呼叫端如何傳遞檔案內容
 
@@ -215,8 +216,9 @@ BRIDGE_HOST=0.0.0.0   BRIDGE_PORT=18794 BRIDGE_TOOL_MODE=llm \
 
 `--tools ""` 移除的是內建工具,但 `claude -p` 仍然是一個帶設定的 Claude Code process。LLM 模式**不會**中和掉:
 
-- **User 層級的 Claude Code 設定** — v1.4.1 已隔離工作目錄,所以 *project 層級* 的 `CLAUDE.md` 不再滲入。但 *user 層級* 的 `~/.claude/CLAUDE.md` 與 `~/.claude/settings.json`(自訂 system prompt、output style)不論 cwd 都會載入,仍會影響回應。要完全可重現的模型端點,用一份乾淨的 `HOME` / Claude Code 設定來跑 LLM 實例。
-- **Agent 人格 / 幻想出來的工具** — 回應仍出自 Claude Code 的 coding-agent system prompt,所以可能偏簡短、偏寫程式口吻。又因為上面那條 user 層級設定,Claude 甚至可能*聲稱*自己有工具(例如「我可以用 Read/Bash」)——但真正的工具註冊表是空的(已驗證 `tools:[]`),所以那種呼叫根本不存在。這只是表面上的混淆,不是 host 存取。
+- **Agent 人格** — 回應仍出自 Claude Code 內建的 coding-agent system prompt。這是 `claude -p` 本身固有的(不屬於設定來源),所以會保留,可能讓回答偏簡短、偏寫程式口吻。Claude 偶爾可能*聲稱*自己有工具(例如「我可以用 Read/Bash」),但真正的工具註冊表是空的(已驗證 `tools:[]`),那種呼叫根本不存在——只是表面混淆,不是 host 存取。
+
+> **v1.5 已解決:** 先前版本無法隔離 *user 層級* 的 `~/.claude/CLAUDE.md`、`settings.json`、plugin 或 SessionStart hook(只隔離了 *project 層級* 的 `CLAUDE.md`/工作目錄)。`--setting-sources ""` 現在讓這些全部不載入,且 OAuth 訂閱認證照常運作——端點因此更接近一個乾淨的模型供應商。
 - **`tools[]` 呼叫的串流** — 當 request 帶 `tools[]`(v1.5)時,前導文字會先以 content 串流,接著每個 `<tool_call>` 在其區塊一閉合就立即以獨立的 `tool_calls` delta 送出,多個平行呼叫各自帶正確的 `index`。第一個 tool call 之後的文字會被抑制(協定要求模型在區塊後停止)。純文字(無 `tools[]`)的 request 則正常串流、不受影響。
 
 ## 逐次呼叫用量 log 與 Tool Bridge 解析（v1.5.0）
