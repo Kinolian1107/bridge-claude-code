@@ -57,6 +57,29 @@ export ANTHROPIC_API_KEY=<your BRIDGE_API_KEY, or any value if auth is off>
 The Anthropic Python/TypeScript SDK and Claude Code itself then route through the
 bridge — useful for local auto-approve workflows.
 
+### Windows one-command launcher (`connect-claude.ps1`)
+
+For Windows clients, [`remote-setup/connect-claude.ps1`](../remote-setup/connect-claude.ps1) automates the whole client side: it health-checks the bridge, sets `ANTHROPIC_BASE_URL` + auth for the shell, works around Claude Code's startup call to `api.anthropic.com` (it marks `hasCompletedOnboarding=true` in `~/.claude.json`, keeping a `.bak` — see claude-code #26935 / #36998), then launches `claude` in the current directory.
+
+**Setup (host admin, once)** — edit the three defaults at the top of the script, then distribute it:
+
+| Param | Set it to |
+|-------|-----------|
+| `$BridgeHost` | the bridge host's LAN IPv4 |
+| `$Port` | its `BRIDGE_PORT` |
+| `$ApiKey` | its `BRIDGE_API_KEY` (leave `""` if auth is off) |
+
+**Use (on the client)** — copy the file into the project you want to work on, then from PowerShell **in that folder**:
+
+```powershell
+.\connect-claude.ps1               # connect + launch claude in this folder
+.\connect-claude.ps1 -NoLaunch     # only set the redirect in this shell (don't launch claude)
+.\connect-claude.ps1 -Persist      # also save the redirect to the User environment (future shells)
+.\connect-claude.ps1 -p "hello"    # forward extra args straight to claude
+```
+
+The client only needs the **Claude Code CLI installed** — no `claude` login, because the claude.ai subscription / auth lives on the **bridge host**. The script sends the bridge key as both `Authorization: Bearer` and `x-api-key` (the bridge accepts either) and disables Claude Code's non-essential traffic to anthropic.com. If the health check fails it prints the exact things to check (host running, firewall open for the port, host bound to `0.0.0.0`).
+
 ## OpenAI SDK / plain curl
 
 ```python

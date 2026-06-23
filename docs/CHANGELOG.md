@@ -40,6 +40,10 @@
   `CLAUDE_MODEL`** instead of erroring `claude --model gpt-4o`. New `BRIDGE_FORCE_MODEL` (empty = off)
   pins the model host-side regardless of the client — for cost control on a shared host. See
   [configuration](configuration.md#model-selection--forcing-v15).
+- **Windows client launcher** (`remote-setup/connect-claude.ps1`) — one command points a Windows
+  client's Claude Code at a remote bridge: health check, `ANTHROPIC_BASE_URL` + auth, the
+  `api.anthropic.com` onboarding workaround, then launches `claude` in the current directory. See
+  [integrations](integrations.md#windows-one-command-launcher-connect-claudeps1).
 
 ### Changed
 - **Internal** — extracted pure, unit-tested modules `lib/tool-bridge.mjs`, `lib/cli-output.mjs`,

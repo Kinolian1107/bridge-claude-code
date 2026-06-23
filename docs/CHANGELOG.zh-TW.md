@@ -37,6 +37,9 @@
   model,現在會**回退到 `CLAUDE_MODEL`**,而不是把 `claude --model gpt-4o` 丟出去報錯。新增
   `BRIDGE_FORCE_MODEL`(空 = 關)可在 host 端不管 client 一律鎖定模型——共用主機控成本用。見
   [configuration](configuration.zh-TW.md#模型選擇與強制鎖定-v15)。
+- **Windows client 啟動器**(`remote-setup/connect-claude.ps1`)— 一行指令把 Windows client 的
+  Claude Code 指向遠端 bridge:health check、`ANTHROPIC_BASE_URL` + 認證、`api.anthropic.com` 的
+  onboarding 繞道,然後在當前目錄啟動 `claude`。見 [integrations](integrations.zh-TW.md)。
 
 ### 變更
 - **內部** — 抽出純粹、有單元測試的模組 `lib/tool-bridge.mjs`、`lib/cli-output.mjs`、
